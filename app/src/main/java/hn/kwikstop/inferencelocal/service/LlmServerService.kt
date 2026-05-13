@@ -14,160 +14,217 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import hn.kwikstop.inferencelocal.MainActivity
 import hn.kwikstop.inferencelocal.R
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
-import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession.LlmInferenceSessionOptions
-import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.call
-import io.ktor.server.application.install
+import hn.kwikstop.inferencelocal.api.LlmEngineKey
+import hn.kwikstop.inferencelocal.api.ModelRegistryKey
+import hn.kwikstop.inferencelocal.api.engine.LlmEngine
+import hn.kwikstop.inferencelocal.api.ollamaApiModule
+import hn.kwikstop.inferencelocal.api.registry.ModelRegistry
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.response.respondText
-import io.ktor.server.routing.post
-import io.ktor.server.routing.get
-import io.ktor.server.routing.routing
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
-
-
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LlmServerService  –  Foreground Service
+// Estados del servicio — se emiten via Broadcast para actualizar la UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+sealed class ServerState {
+    object Idle                              : ServerState()
+    object LoadingModel                      : ServerState()
+    object StartingServer                    : ServerState()
+    data class Running(val port: Int,
+                       val modelName: String): ServerState()
+    data class Error(val message: String)    : ServerState()
+    object Stopping                          : ServerState()
+    object Stopped                           : ServerState()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LlmServerService — Foreground Service
 // ─────────────────────────────────────────────────────────────────────────────
 
 class LlmServerService : Service() {
 
+    // ── Companion ─────────────────────────────────────────────────────────────
     companion object {
         private const val TAG = "LlmServerService"
 
-        // Intents para controlar el servicio desde la UI
-        const val ACTION_START = "com.example.localllmserver.ACTION_START"
-        const val ACTION_STOP  = "com.example.localllmserver.ACTION_STOP"
+        // Acciones del Intent
+        const val ACTION_START = "hn.kwikstop.inferencelocal.ACTION_START"
+        const val ACTION_STOP  = "hn.kwikstop.inferencelocal.ACTION_STOP"
+
+        // Extras del Intent de inicio
+        const val EXTRA_MODEL_NAME = "extra_model_name"
+        const val EXTRA_PORT       = "extra_port"
+
+        // Broadcast de estado hacia la UI
+        const val BROADCAST_STATE    = "hn.kwikstop.inferencelocal.STATE"
+        const val EXTRA_STATE_CODE   = "state_code"     // String del enum
+        const val EXTRA_STATE_MSG    = "state_msg"      // Mensaje legible
+        const val EXTRA_STATE_PORT   = "state_port"
+        const val EXTRA_STATE_MODEL  = "state_model"
+        const val EXTRA_STATE_ERROR  = "state_error"
 
         // Notificación
-        private const val NOTIFICATION_CHANNEL_ID = "llm_server_channel"
-        private const val NOTIFICATION_ID = 1001
+        private const val CHANNEL_ID       = "llm_server_channel"
+        private const val NOTIFICATION_ID  = 1001
 
-        // Puerto del servidor HTTP
-        const val SERVER_PORT = 11434
+        // Defaults
+        const val DEFAULT_PORT            = 11434
+        const val DEFAULT_MODEL_FILENAME  = "gemma-2b-it-gpu-int4.bin"
+        const val DEFAULT_MODEL_NAME      = "gemma-2b-it"
 
-        // Ruta del modelo dentro del almacenamiento del dispositivo.
-        // El usuario debe colocar el archivo .bin en:
-        //   /sdcard/Android/data/com.example.localllmserver/files/gemma-2b-it-gpu.bin
-        // O bien en assets si el APK lo empaqueta (no recomendado por tamaño).
-        const val MODEL_FILE_NAME = "gemma-2b-it-gpu-int4.bin"
-        const val EXTRA_MODEL_NAME = "extra_model_name"
-        // Broadcast que emite el servicio para informar a la UI
-        const val BROADCAST_STATUS = "com.example.localllmserver.STATUS"
-        const val EXTRA_RUNNING    = "running"
-        const val EXTRA_ERROR      = "error"
+        // Helpers para construir intents desde la UI
+        fun startIntent(context: Context, modelName: String = DEFAULT_MODEL_FILENAME, port: Int = DEFAULT_PORT) =
+            Intent(context, LlmServerService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_MODEL_NAME, modelName)
+                putExtra(EXTRA_PORT, port)
+            }
+
+        fun stopIntent(context: Context) =
+            Intent(context, LlmServerService::class.java).apply {
+                action = ACTION_STOP
+            }
     }
 
-    // ── Ciclo de vida del servicio ────────────────────────────────────────────
-    private var currentModelName = MODEL_FILE_NAME
-    private val serviceJob  = SupervisorJob()
+    // ── Estado interno ────────────────────────────────────────────────────────
+
+    /** Corutina supervisora: si un hijo falla, los demás siguen corriendo */
+    private val serviceJob   = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
 
-    private var llmInference: LlmInference? = null
-    private var ktorServer: NettyApplicationEngine? = null
+    private var initJob: Job? = null          // Job de la tarea de inicialización
+    private val isRunning = AtomicBoolean(false)
 
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
+    private var engine   : LlmEngine?              = null
+    private var registry : ModelRegistry?           = null
+    private var server   : NettyApplicationEngine?  = null
 
-    // ── onCreate ─────────────────────────────────────────────────────────────
+    private var currentModelName = DEFAULT_MODEL_FILENAME
+    private var currentPort      = DEFAULT_PORT
+
+    private var wakeLock : PowerManager.WakeLock?   = null
+    private var wifiLock : WifiManager.WifiLock?    = null
+
+    // ── Ciclo de vida del Service ─────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        Log.i(TAG, "Service created")
+        Log.i(TAG, "Service creado")
     }
-
-    // ── onStartCommand ───────────────────────────────────────────────────────
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> {
-                currentModelName = intent.getStringExtra(EXTRA_MODEL_NAME) ?: MODEL_FILE_NAME
-                startForeground(NOTIFICATION_ID, buildNotification("Iniciando modelo…"))
-                acquireLocks()
-                serviceScope.launch { initModelAndServer(currentModelName) }
-            }
-            ACTION_STOP -> {
-                stopServer()
-                stopSelf()
-            }
-        }
-        return START_STICKY   // El sistema reinicia el servicio si muere
-    }
 
-    // ── onBind ───────────────────────────────────────────────────────────────
+            ACTION_START -> {
+                if (isRunning.get()) {
+                    Log.w(TAG, "El servicio ya está corriendo — ignorando ACTION_START duplicado")
+                    return START_STICKY
+                }
+
+                currentModelName = intent.getStringExtra(EXTRA_MODEL_NAME) ?: DEFAULT_MODEL_FILENAME
+                currentPort      = intent.getIntExtra(EXTRA_PORT, DEFAULT_PORT)
+
+                // Promover a Foreground inmediatamente para que Android no mate el proceso
+                startForeground(NOTIFICATION_ID, buildNotification("Iniciando…"))
+                acquireLocks()
+
+                initJob = serviceScope.launch {
+                    initModelAndServer()
+                }
+            }
+
+            ACTION_STOP -> {
+                Log.i(TAG, "ACTION_STOP recibido")
+                serviceScope.launch { shutdownGracefully() }
+            }
+
+            else -> Log.w(TAG, "Intent sin acción reconocida: ${intent?.action}")
+        }
+
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ── onDestroy ────────────────────────────────────────────────────────────
-
     override fun onDestroy() {
-        stopServer()
+        Log.i(TAG, "onDestroy — limpiando recursos")
+        serviceScope.cancel()   // cancela todas las corutinas hijas
         serviceJob.cancel()
         releaseLocks()
         super.onDestroy()
-        Log.i(TAG, "Service destroyed")
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Inicialización del modelo y del servidor
+    // Inicialización — carga modelo → levanta servidor
     // ─────────────────────────────────────────────────────────────────────────
 
-    private suspend fun initModelAndServer(modelFileName: String) {
+    private suspend fun initModelAndServer() {
         try {
-            // 1. Cargar el modelo en GPU vía MediaPipe LLM Inference
-            Log.i(TAG, "Cargando modelo: $modelFileName")
-            updateNotification("Cargando $modelFileName...")
+            // ── 1. Validar que el archivo del modelo exista ────────────────
+            val modelsDir = getExternalFilesDir(null)
+                ?: throw IllegalStateException("No se puede acceder al almacenamiento externo")
 
-            llmInference = withContext(Dispatchers.IO) {
-                val modelPath = "${getExternalFilesDir(null)?.absolutePath}/$modelFileName"
-
-                // 1. Configuración del modelo (Base)
-                // El backend GPU se detecta automáticamente si el modelo es compatible
-                val options = LlmInferenceOptions.builder()
-                    .setModelPath(modelPath)
-                    .setPreferredBackend(LlmInference.Backend.GPU)
-                    .setMaxTopK(40)
-                    .setMaxTokens(4096)
-                    .build()
-
-                // Creamos la instancia principal
-                val inference = LlmInference.createFromOptions(applicationContext, options)
-
-
-                inference
+            val modelFile = File(modelsDir, currentModelName)
+            if (!modelFile.exists()) {
+                throw IllegalStateException(
+                    "Archivo de modelo no encontrado: ${modelFile.absolutePath}\n" +
+                            "Usa ADB para copiarlo:\n" +
+                            "  adb push $currentModelName /sdcard/Android/data/<package>/files/"
+                )
             }
 
-            Log.i(TAG, "Modelo cargado correctamente. Iniciando servidor HTTP…")
-            updateNotification("Servidor activo en :$SERVER_PORT")
+            // ── 2. Cargar modelo ──────────────────────────────────────────
+            broadcastState(ServerState.LoadingModel, "Cargando $currentModelName…")
+            updateNotification("Cargando modelo…")
 
-            // 2. Lanzar el servidor Ktor
+            engine = LlmEngine(
+                context   = applicationContext,
+                modelPath = modelFile.absolutePath
+            )
+            engine!!.load()   // suspende hasta que el modelo esté en GPU
+            Log.i(TAG, "Modelo cargado: ${modelFile.absolutePath}")
+
+            // ── 3. Inicializar el registro de modelos ─────────────────────
+            registry = ModelRegistry(
+                modelsDir       = modelsDir,
+                modelFileName   = currentModelName   // ← "gemma-2b-it-gpu-int4.bin"
+            ).also { reg ->
+                reg.initialize()
+                reg.setActiveModel(ModelRegistry.DEFAULT_MODEL)
+            }
+
+            // ── 4. Levantar el servidor Ktor ──────────────────────────────
+            broadcastState(ServerState.StartingServer, "Iniciando servidor en :$currentPort…")
+            updateNotification("Iniciando servidor…")
+
             startKtorServer()
-            broadcastStatus(running = true)
+            isRunning.set(true)
+
+            val msg = "Servidor activo en 0.0.0.0:$currentPort"
+            Log.i(TAG, msg)
+            updateNotification(msg)
+            broadcastState(
+                ServerState.Running(port = currentPort, modelName = DEFAULT_MODEL_NAME),
+                msg
+            )
 
         } catch (e: Exception) {
             Log.e(TAG, "Error al inicializar: ${e.message}", e)
-            updateNotification("Error: ${e.message}")
-            broadcastStatus(running = false, error = e.message)
-            stopSelf()
+            val msg = e.message ?: "Error desconocido"
+            updateNotification("Error: $msg")
+            broadcastState(ServerState.Error(msg), msg)
+            // Detener el servicio limpiamente tras el error
+            shutdownGracefully()
         }
     }
 
@@ -176,55 +233,112 @@ class LlmServerService : Service() {
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun startKtorServer() {
-        // 1. Crear el servidor
-        ktorServer = embeddedServer(Netty, port = SERVER_PORT, host = "0.0.0.0", configure = {connectionGroupSize = 2
-            workerGroupSize = 5
-            callGroupSize = 10
-        }) {
-            // 2. Inyectar el atributo DENTRO del bloque de configuración de la Application
-            attributes.put(LlmInferenceKey, llmInference!!)
+        val safeEngine   = requireNotNull(engine)   { "LlmEngine es null al iniciar Ktor" }
+        val safeRegistry = requireNotNull(registry) { "ModelRegistry es null al iniciar Ktor" }
 
+        server = embeddedServer(
+            factory = Netty,
+            port    = currentPort,
+            host    = "0.0.0.0",
+            configure = {
+                connectionGroupSize = 2   // hilos de aceptación de conexiones
+                workerGroupSize     = 4   // hilos de I/O de Netty
+                callGroupSize       = 8   // hilos de procesamiento de requests
+            }
+        ) {
+            // Inyectar dependencias en los atributos de la Application
+            // (disponibles para todos los handlers via call.application.attributes)
+            attributes.put(LlmEngineKey,     safeEngine)
+            attributes.put(ModelRegistryKey, safeRegistry)
 
-            // Llamar al módulo
-            llmServerModule()
+            // Instalar rutas y plugins
+            ollamaApiModule()
         }
 
-        // 3. Iniciar el servidor fuera del constructor del servidor
-        ktorServer?.start(wait = false)
-
-        Log.i(TAG, "Servidor Ktor activo en 0.0.0.0:$SERVER_PORT")
-    }
-
-    private fun stopServer() {
-        try {
-            ktorServer?.stop(gracePeriodMillis = 1_000, timeoutMillis = 3_000)
-            ktorServer = null
-            llmInference?.close()
-            llmInference = null
-            Log.i(TAG, "Servidor detenido y modelo liberado")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error al detener el servidor: ${e.message}", e)
-        }
-        broadcastStatus(running = false)
+        server!!.start(wait = false)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // WakeLock y WifiLock
+    // Apagado graceful
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private suspend fun shutdownGracefully() {
+        broadcastState(ServerState.Stopping, "Deteniendo servidor…")
+        updateNotification("Deteniendo…")
+
+        // Cancelar la inicialización si aún está en curso
+        initJob?.cancel()
+        initJob = null
+
+        // Detener Ktor con período de gracia de 1s y timeout de 3s
+        runCatching {
+            server?.stop(gracePeriodMillis = 1_000, timeoutMillis = 3_000)
+        }.onFailure { Log.w(TAG, "Error al detener Ktor: ${it.message}") }
+        server = null
+
+        // Descargar el modelo de GPU
+        runCatching {
+            engine?.unload()
+        }.onFailure { Log.w(TAG, "Error al descargar modelo: ${it.message}") }
+        engine = null
+
+        // Limpiar registro
+        registry?.clearActiveModel()
+        registry = null
+
+        isRunning.set(false)
+
+        broadcastState(ServerState.Stopped, "Servidor detenido")
+        releaseLocks()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        Log.i(TAG, "Servicio detenido limpiamente")
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Broadcast hacia la UI
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun broadcastState(state: ServerState, message: String) {
+        val intent = Intent(BROADCAST_STATE).apply {
+            putExtra(EXTRA_STATE_MSG, message)
+            when (state) {
+                is ServerState.Idle          -> putExtra(EXTRA_STATE_CODE, "IDLE")
+                is ServerState.LoadingModel  -> putExtra(EXTRA_STATE_CODE, "LOADING_MODEL")
+                is ServerState.StartingServer-> putExtra(EXTRA_STATE_CODE, "STARTING_SERVER")
+                is ServerState.Running       -> {
+                    putExtra(EXTRA_STATE_CODE,  "RUNNING")
+                    putExtra(EXTRA_STATE_PORT,  state.port)
+                    putExtra(EXTRA_STATE_MODEL, state.modelName)
+                }
+                is ServerState.Error         -> {
+                    putExtra(EXTRA_STATE_CODE,  "ERROR")
+                    putExtra(EXTRA_STATE_ERROR, state.message)
+                }
+                is ServerState.Stopping      -> putExtra(EXTRA_STATE_CODE, "STOPPING")
+                is ServerState.Stopped       -> putExtra(EXTRA_STATE_CODE, "STOPPED")
+            }
+        }
+        sendBroadcast(intent)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WakeLock / WifiLock
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun acquireLocks() {
-        // WakeLock: impide que la CPU entre en suspensión profunda
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
+        // WakeLock parcial: mantiene la CPU activa sin encender pantalla
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "$TAG:WakeLock"
         ).apply {
-            acquire(6 * 60 * 60 * 1_000L) // Máximo 6 horas de seguridad
+            acquire(6 * 60 * 60 * 1_000L)   // máximo 6 horas de seguridad
         }
 
-        // WifiLock: mantiene la conexión Wi-Fi activa en modo alto rendimiento
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wifiManager.createWifiLock(
+        // WifiLock alto rendimiento: evita que el Wi-Fi entre en modo bajo consumo
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        wifiLock = wm.createWifiLock(
             WifiManager.WIFI_MODE_FULL_HIGH_PERF,
             "$TAG:WifiLock"
         ).apply { acquire() }
@@ -235,6 +349,8 @@ class LlmServerService : Service() {
     private fun releaseLocks() {
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
+        wakeLock = null
+        wifiLock = null
         Log.i(TAG, "WakeLock y WifiLock liberados")
     }
 
@@ -244,55 +360,50 @@ class LlmServerService : Service() {
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
-            NOTIFICATION_CHANNEL_ID,
+            CHANNEL_ID,
             "LLM Server",
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_LOW          // silencioso, sin vibración
         ).apply {
-            description = "Servidor LLM ejecutándose en segundo plano"
+            description  = "Servidor LLM ejecutándose en segundo plano"
             setShowBadge(false)
         }
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java)
+            .createNotificationChannel(channel)
     }
 
     private fun buildNotification(contentText: String): Notification {
-        val pendingIntent = PendingIntent.getActivity(
+        // Tap en la notificación → abre MainActivity
+        val openAppPi = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = PendingIntent.getService(
+        // Botón "Detener" en la notificación
+        val stopPi = PendingIntent.getService(
             this, 1,
-            Intent(this, LlmServerService::class.java).apply { action = ACTION_STOP },
+            stopIntent(this),
             PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Local LLM Server")
             .setContentText(contentText)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)      // Asegúrate de tener este drawable
-            .setContentIntent(pendingIntent)
-            .addAction(R.drawable.ic_launcher_foreground, "Detener", stopIntent)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(openAppPi)
+            .addAction(
+                R.drawable.ic_launcher_foreground,
+                "Detener",
+                stopPi
+            )
             .setOngoing(true)
             .setSilent(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
 
     private fun updateNotification(text: String) {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, buildNotification(text))
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Broadcast hacia la UI
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private fun broadcastStatus(running: Boolean, error: String? = null) {
-        val intent = Intent(BROADCAST_STATUS).apply {
-            putExtra(EXTRA_RUNNING, running)
-            error?.let { putExtra(EXTRA_ERROR, it) }
-        }
-        sendBroadcast(intent)
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(text))
     }
 }
