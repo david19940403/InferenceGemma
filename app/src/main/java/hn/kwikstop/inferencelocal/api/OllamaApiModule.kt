@@ -4,6 +4,9 @@ package hn.kwikstop.inferencelocal.api
 import hn.kwikstop.inferencelocal.api.engine.LlmEngine
 import hn.kwikstop.inferencelocal.api.models.*
 import hn.kwikstop.inferencelocal.api.registry.ModelRegistry
+import io.ktor.http.CacheControl
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -13,7 +16,12 @@ import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receive
+import io.ktor.server.response.cacheControl
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondOutputStream
+import io.ktor.server.response.respondTextWriter
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -21,6 +29,8 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.util.AttributeKey
 import io.ktor.util.pipeline.PipelineContext
+import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.flow.catch
 import kotlinx.serialization.json.Json
 import java.time.Instant
 import java.time.format.DateTimeFormatter
@@ -149,17 +159,70 @@ fun Application.ollamaApiModule() {
                     options  = req.options
                 )
 
-                call.respond(
-                    HttpStatusCode.OK,
-                    ChatResponse(
-                        model     = req.model,
-                        createdAt = isoNow(),
-                        message   = ChatMessage(role = "assistant", content = result.text),
-                        done      = true,
-                        totalDuration = result.totalDurationNs,
-                        evalCount     = result.evalCount
+                if (req.stream) {
+                    val startMs = System.currentTimeMillis()
+                    var tokensEmitted = 0
+
+                    // Importante: Headers para evitar que el proxy/navegador guarde en el buffer la respuesta
+                    call.response.header(HttpHeaders.ContentType, "application/x-ndjson")
+                    call.response.header(HttpHeaders.CacheControl, "no-cache")
+                    call.response.header(HttpHeaders.Connection, "keep-alive")
+                    call.response.header("X-Accel-Buffering", "no") // Para Nginx
+
+                    call.respondBytesWriter(status = HttpStatusCode.OK) {
+                        engine.chatStream(messages = req.messages)
+                            .catch { e ->
+                                val errorChunk = ChatResponse(
+                                    model = req.model,
+                                    createdAt = java.time.Instant.now().toString(),
+                                    message = ChatMessage(role = "assistant", content = "\n[Error: ${e.message}]"),
+                                    done = true
+                                )
+                                writeStringUtf8(Json.encodeToString(ChatResponse.serializer(), errorChunk) + "\n")
+                                flush()
+                            }
+                            .collect { token ->
+                                if (token.text.isNotEmpty()) {
+                                    tokensEmitted++
+                                    val chunk = ChatResponse(
+                                        model = req.model,
+                                        createdAt = java.time.Instant.now().toString(),
+                                        message = ChatMessage(role = "assistant", content = token.text),
+                                        done = false
+                                    )
+                                    writeStringUtf8(Json.encodeToString(ChatResponse.serializer(), chunk) + "\n")
+                                    flush() // Obliga a enviar el paquete por la red inmediatamente
+                                }
+
+                                if (token.isDone) {
+                                    val finalChunk = ChatResponse(
+                                        model = req.model,
+                                        createdAt = java.time.Instant.now().toString(),
+                                        message = ChatMessage(role = "assistant", content = ""),
+                                        done = true,
+                                        totalDuration = (System.currentTimeMillis() - startMs) * 1_000_000L,
+                                        evalCount = tokensEmitted
+                                    )
+                                    writeStringUtf8(Json.encodeToString(ChatResponse.serializer(), finalChunk) + "\n")
+                                    flush()
+                                }
+                            }
+                    }
+                }else{
+                    call.respond(
+                        HttpStatusCode.OK,
+                        ChatResponse(
+                            model     = req.model,
+                            createdAt = isoNow(),
+                            message   = ChatMessage(role = "assistant", content = result.text),
+                            done      = true,
+                            totalDuration = result.totalDurationNs,
+                            evalCount     = result.evalCount
+                        )
                     )
-                )
+                }
+
+
             }
 
             // ──────────────────────────────────────────────────────────────────

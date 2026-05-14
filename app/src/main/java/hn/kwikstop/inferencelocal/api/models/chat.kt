@@ -25,5 +25,16 @@ data class ChatResponse(
     val message: ChatMessage,
     val done: Boolean = true,
     @SerialName("total_duration") val totalDuration: Long? = null,
-    @SerialName("eval_count") val evalCount: Int? = null
+    @SerialName("eval_count") val evalCount: Int? = null,
+
+    @SerialName("load_duration") val loadDuration: Long? = null,
+    @SerialName("prompt_eval_count") val promptEvalCount: Int? = null,
+    @SerialName("prompt_eval_duration") val promptEvalDuration: Long? = null,
+    @SerialName("eval_duration") val evalDuration: Long? = null
+)
+
+@Serializable
+data class StreamToken(
+    val text    : String,
+    val isDone  : Boolean
 )

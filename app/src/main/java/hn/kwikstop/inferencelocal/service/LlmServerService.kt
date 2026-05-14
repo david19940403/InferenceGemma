@@ -59,6 +59,7 @@ class LlmServerService : Service() {
         // Acciones del Intent
         const val ACTION_START = "hn.kwikstop.inferencelocal.ACTION_START"
         const val ACTION_STOP  = "hn.kwikstop.inferencelocal.ACTION_STOP"
+        const val ACTION_QUERY_STATE  = "hn.kwikstop.inferencelocal.ACTION_QUERY_STATE"
 
         // Extras del Intent de inicio
         const val EXTRA_MODEL_NAME = "extra_model_name"
@@ -124,7 +125,11 @@ class LlmServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-
+            ACTION_QUERY_STATE -> {
+                Log.i(TAG, "Consulta de estado recibida. Fase actual: $currentPhase")
+                // Respondemos con lo que el servicio SABE que está pasando
+                emitState(currentPhase, getDisplayMessage(), lastErrorMessage)
+            }
             ACTION_START -> {
                 if (isRunning.get()) {
                     Log.w(TAG, "El servicio ya está corriendo — ignorando ACTION_START duplicado")
@@ -148,10 +153,35 @@ class LlmServerService : Service() {
                 serviceScope.launch { shutdownGracefully() }
             }
 
+
             else -> Log.w(TAG, "Intent sin acción reconocida: ${intent?.action}")
         }
 
         return START_STICKY
+    }
+    private var currentPhase: String = "IDLE"
+    private var lastErrorMessage: String? = null
+    private fun emitState(phase: String, msg: String, err: String? = null) {
+        val intent = Intent(BROADCAST_STATE).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_STATE_CODE, phase)
+            putExtra(EXTRA_STATE_MSG, msg)
+            putExtra(EXTRA_STATE_ERROR, err)
+            putExtra(EXTRA_STATE_PORT, currentPort)
+            putExtra(EXTRA_STATE_MODEL, currentModelName)
+        }
+        sendBroadcast(intent)
+        Log.d(TAG, "Estado re-emitido a la UI: $phase")
+    }
+
+    private fun getDisplayMessage(): String {
+        return when(currentPhase) {
+            "RUNNING" -> "Servidor activo en 0.0.0.0:$currentPort"
+            "LOADING_MODEL" -> "Cargando modelo…"
+            "ERROR" -> lastErrorMessage ?: "Error desconocido"
+            "IDLE", "STOPPED" -> "Servidor detenido"
+            else -> "Procesando..."
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -300,24 +330,25 @@ class LlmServerService : Service() {
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun broadcastState(state: ServerState, message: String) {
+        // ACTUALIZACIÓN: Guardamos la fase actual para recuperarla luego
+        currentPhase = when (state) {
+            is ServerState.Idle           -> "IDLE"
+            is ServerState.LoadingModel   -> "LOADING_MODEL"
+            is ServerState.StartingServer -> "STARTING_SERVER"
+            is ServerState.Running        -> "RUNNING"
+            is ServerState.Error          -> "ERROR"
+            is ServerState.Stopping       -> "STOPPING"
+            is ServerState.Stopped        -> "STOPPED"
+        }
+        lastErrorMessage = if (state is ServerState.Error) state.message else null
+
         val intent = Intent(BROADCAST_STATE).apply {
+            setPackage(packageName) // Asegúrate de que siempre lleve el package
             putExtra(EXTRA_STATE_MSG, message)
-            when (state) {
-                is ServerState.Idle          -> putExtra(EXTRA_STATE_CODE, "IDLE")
-                is ServerState.LoadingModel  -> putExtra(EXTRA_STATE_CODE, "LOADING_MODEL")
-                is ServerState.StartingServer-> putExtra(EXTRA_STATE_CODE, "STARTING_SERVER")
-                is ServerState.Running       -> {
-                    putExtra(EXTRA_STATE_CODE,  "RUNNING")
-                    putExtra(EXTRA_STATE_PORT,  state.port)
-                    putExtra(EXTRA_STATE_MODEL, state.modelName)
-                }
-                is ServerState.Error         -> {
-                    putExtra(EXTRA_STATE_CODE,  "ERROR")
-                    putExtra(EXTRA_STATE_ERROR, state.message)
-                }
-                is ServerState.Stopping      -> putExtra(EXTRA_STATE_CODE, "STOPPING")
-                is ServerState.Stopped       -> putExtra(EXTRA_STATE_CODE, "STOPPED")
-            }
+            putExtra(EXTRA_STATE_CODE, currentPhase)
+            putExtra(EXTRA_STATE_PORT, currentPort)
+            putExtra(EXTRA_STATE_MODEL, currentModelName)
+            if (lastErrorMessage != null) putExtra(EXTRA_STATE_ERROR, lastErrorMessage)
         }
         sendBroadcast(intent)
     }

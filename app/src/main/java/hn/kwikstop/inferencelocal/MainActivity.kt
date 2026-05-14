@@ -64,6 +64,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,6 +90,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import hn.kwikstop.inferencelocal.service.LlmServerService
+import kotlinx.coroutines.delay
 import java.net.NetworkInterface
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,6 +159,7 @@ fun LlmServerScreen() {
     DisposableEffect(Unit) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context, intent: Intent) {
+                // Log.d("DEBUG", "Recibido: ${intent.getStringExtra(LlmServerService.EXTRA_STATE_CODE)}")
                 val code  = intent.getStringExtra(LlmServerService.EXTRA_STATE_CODE) ?: return
                 val msg   = intent.getStringExtra(LlmServerService.EXTRA_STATE_MSG)  ?: ""
                 val err   = intent.getStringExtra(LlmServerService.EXTRA_STATE_ERROR)
@@ -164,24 +167,39 @@ fun LlmServerScreen() {
                 val model = intent.getStringExtra(LlmServerService.EXTRA_STATE_MODEL) ?: ""
 
                 ui = when (code) {
-                    "LOADING_MODEL"  -> UiState(UiPhase.LOADING_MODEL,  model, port, msg)
-                    "STARTING_SERVER"-> UiState(UiPhase.STARTING_SERVER, model, port, msg)
-                    "RUNNING"        -> UiState(UiPhase.RUNNING,         model, port, msg)
-                    "STOPPING"       -> UiState(UiPhase.STOPPING,        model, port, msg)
-                    "STOPPED"        -> UiState(UiPhase.IDLE,            model, port, "Servidor detenido")
-                    "ERROR"          -> UiState(UiPhase.ERROR,           model, port, msg, err)
-                    else             -> ui
+                    "LOADING_MODEL"   -> UiState(UiPhase.LOADING_MODEL,  model, port, msg)
+                    "STARTING_SERVER" -> UiState(UiPhase.STARTING_SERVER, model, port, msg)
+                    "RUNNING"         -> UiState(UiPhase.RUNNING,         model, port, msg)
+                    "STOPPING"        -> UiState(UiPhase.STOPPING,        model, port, msg)
+                    "STOPPED"         -> UiState(UiPhase.IDLE,            model, port, "Servidor detenido")
+                    "ERROR"           -> UiState(UiPhase.ERROR,           model, port, msg, err)
+                    else              -> ui
                 }
             }
         }
+
         val filter = IntentFilter(LlmServerService.BROADCAST_STATE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        else
-            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        // Cambiamos a EXPORTED para debugging o asegúrate de que el Service use setPackage()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+
+        // Enviamos el query DESPUÉS de registrar el receptor con un pequeño delay
+        // o simplemente aquí mismo:
+        //context.sendBroadcast(Intent(LlmServerService.ACTION_QUERY_STATE).
+
         onDispose { context.unregisterReceiver(receiver) }
     }
-
+    LaunchedEffect(Unit) {
+        delay(500) // Esperar a que el receptor se registre bien
+        val queryIntent = Intent(context, LlmServerService::class.java).apply {
+            action = LlmServerService.ACTION_QUERY_STATE
+        }
+        context.startService(queryIntent)
+    }
     val isRunning  = ui.phase == UiPhase.RUNNING
     val isBusy     = ui.phase == UiPhase.LOADING_MODEL ||
             ui.phase == UiPhase.STARTING_SERVER ||

@@ -14,8 +14,7 @@
 
     <!-- ── Foreground Service ──────────────────────────────────────────── -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- API 34+: tipo de foreground service requerido -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
         tools:targetApi="34" />
 
     <!-- ── Notificaciones (Android 13+) ────────────────────────────────── -->
@@ -64,7 +63,7 @@
             android:name=".service.LlmServerService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="dataSync">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local LLM inference server exposed via HTTP on the local network" />

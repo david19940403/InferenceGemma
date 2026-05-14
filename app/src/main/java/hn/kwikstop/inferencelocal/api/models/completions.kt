@@ -41,3 +41,4 @@ data class OaiUsage(
     @SerialName("completion_tokens") val completionTokens: Int = 0,
     @SerialName("total_tokens") val totalTokens: Int = 0
 )
+
