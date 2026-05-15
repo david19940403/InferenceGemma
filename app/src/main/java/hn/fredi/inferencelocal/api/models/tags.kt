@@ -9,10 +9,13 @@ data class ModelList(val models: List<ModelInfo>)
 @Serializable
 data class ModelInfo(
     val name: String,
+    val model: String? = null,
     @SerialName("modified_at") val modifiedAt: String,
     val size: Long,
     val digest: String,
-    val details: ModelDetails? = null
+    val details: ModelDetails? = null,
+    @SerialName("remote_model") val remoteModel: String? = null,
+    @SerialName("remote_host") val remoteHost: String? = null
 )
 
 @Serializable

@@ -36,15 +36,12 @@ import java.time.format.DateTimeFormatter
  */
 class ModelRegistry(
     /** Directorio donde están los archivos de modelo en el dispositivo */
-    private val modelsDir: File,
-    /** Nombre del archivo principal (el que carga el LlmEngine) */
-    private val primaryModelFile: String = DEFAULT_PRIMARY_FILE
+    private val modelsDir: File
 ) {
 
     companion object {
         private const val TAG = "ModelRegistry"
 
-        const val DEFAULT_PRIMARY_FILE    = "gemma-2b-it-gpu-int4.bin"
         const val DEFAULT_PRIMARY_NAME    = "gemma-2b-it"
         private const val EMULATED_VERSION = "0.3.12"
 
@@ -69,31 +66,39 @@ class ModelRegistry(
 
     /**
      * Escanea [modelsDir] y registra todos los archivos de modelo encontrados.
-     * Debe llamarse una vez al arrancar el servidor, antes de atender requests.
+     * Registra tanto el nombre interpretado como el nombre de archivo original como alias.
      */
-    fun initialize() {
+    suspend fun initialize() = mutex.withLock {
+        catalog.clear()
         if (!modelsDir.exists()) {
             Log.w(TAG, "Directorio de modelos no existe: ${modelsDir.absolutePath}")
-            return
+            return@withLock
         }
 
         val files = modelsDir.listFiles { f ->
             f.isFile && f.extension.lowercase() in MODEL_EXTENSIONS
         } ?: emptyArray()
 
-        if (files.isEmpty()) {
-            Log.w(TAG, "No se encontraron archivos de modelo en ${modelsDir.absolutePath}")
-            return
-        }
-
         files.forEach { file ->
-            val name  = modelNameFromFile(file)
-            val entry = buildEntry(name, file)
-            catalog[name] = entry
-            Log.i(TAG, "Modelo registrado: $name  (${file.length() / 1_048_576} MB)  [${file.name}]")
+            val prettyName = modelNameFromFile(file)
+            val entry = buildEntry(prettyName, file)
+            
+            // 1. Registro con nombre interpretado (ej: gemma2:2b)
+            val normPretty = normalize(prettyName)
+            catalog[normPretty] = entry
+            
+            // 2. Registro con nombre de archivo original como ALIAS (ej: gemma-4-e2b-it)
+            // Esto permite cargar el modelo usando su nombre real si la interpretación falla
+            val fileNameAlias = file.nameWithoutExtension.lowercase()
+            if (fileNameAlias != normPretty) {
+                // Marcamos como alias pero mantenemos la referencia al archivo
+                catalog[fileNameAlias] = entry.copy(name = fileNameAlias, isAlias = true)
+            }
+            
+            Log.i(TAG, "Modelo registrado: $prettyName (alias: $fileNameAlias) [${file.name}]")
         }
 
-        Log.i(TAG, "Catálogo inicializado: ${catalog.size} modelo(s)")
+        Log.i(TAG, "Catálogo inicializado: ${catalog.size} entradas")
     }
 
     /**
@@ -119,6 +124,8 @@ class ModelRegistry(
     suspend fun listModels(): ModelList = mutex.withLock {
         ModelList(
             models = catalog.values
+                .filter { !it.isAlias || it.modelfile.contains("FROM") } // Mostrar solo nombres reales o modelos creados manualmente
+                .distinctBy { it.digest } // Evitar duplicados si hay múltiples nombres para el mismo archivo
                 .sortedByDescending { it.modifiedAt }
                 .map { it.toModelInfo() }
         )
@@ -260,8 +267,23 @@ class ModelRegistry(
     /** Verifica si el nombre existe en el catálogo */
     fun exists(name: String): Boolean = catalog.containsKey(normalize(name))
 
-    /** Ruta física del archivo del modelo (para el engine) */
-    fun filePath(name: String): String? = catalog[normalize(name)]?.filePath
+    /** Ruta física del archivo del modelo (para el engine) con búsqueda flexible */
+    fun filePath(name: String): String? {
+        val norm = normalize(name)
+        // 1. Intento exacto (nombre interpretado o alias de nombre de archivo)
+        catalog[norm]?.let { return it.filePath }
+        
+        // 2. Búsqueda por nombre de archivo exacto (por si el normalize lo alteró)
+        val rawName = name.lowercase().trim()
+        catalog[rawName]?.let { return it.filePath }
+
+        // 3. Búsqueda flexible (si pide gemma:2b y tenemos gemma2:2b)
+        val baseName = norm.split(":")[0]
+        val match = catalog.values.find { 
+            !it.isAlias && (it.name.startsWith(baseName) || norm.startsWith(it.name.split(":")[0]))
+        }
+        return match?.filePath
+    }
 
     /** Sistema prompt del modelo (para inyectar en el engine si se desea) */
     fun systemPrompt(name: String): String? = catalog[normalize(name)]?.systemPrompt
@@ -321,30 +343,59 @@ class ModelRegistry(
      *   mistral-7b-instruct.gguf  → mistral:7b
      */
     private fun modelNameFromFile(file: File): String {
-        // Si es el archivo primario configurado, usar el nombre primario
-        if (file.name == primaryModelFile) return DEFAULT_PRIMARY_NAME
+        val stem = file.nameWithoutExtension.lowercase().replace("_", "-")
 
-        val stem = file.nameWithoutExtension.lowercase()
-            .replace(Regex("[-_](gpu|cpu|int4|int8|fp16|fp32|q4|q8|q4_0|q4_k_m|instruct|chat|it).*$"), "")
-            .replace("_", "-")
+        // 1. Detectar familia y versión prioritariamente
+        // Buscamos gemma-2, gemma-3, gemma-4 (cuantizado), etc.
+        val familyMatch = Regex("(gemma-?[2-4](?!b)|gemma-?3|gemma|llama-?[3-9]\\.?\\d*|phi-?[3-4]\\.?\\d*|qwen-?2\\.5|mistral)").find(stem)
+        val familyPart = familyMatch?.value ?: ""
+        
+        // Normalizar nombre de familia
+        val familyName = when {
+            familyPart.contains("gemma-2") || familyPart == "gemma2" -> "gemma2"
+            familyPart.contains("gemma-3") || familyPart == "gemma3" -> "gemma3"
+            familyPart.contains("gemma-4") || familyPart == "gemma4" -> "gemma-4" // gemma-4 suele ser gemma2 cuantizado a 4 bits
+            familyPart.contains("gemma") -> "gemma"
+            else -> familyPart.replace("-", "")
+        }
+
+        // 2. Intentar detectar tamaño de parámetros, permitiendo prefijos como 'e' (ej: e2b, 2b, 7b)
+        val sizeMatch = Regex("([e]?\\d+\\.?\\d*b)").find(stem)
+        var sizePart = sizeMatch?.value ?: ""
+        
+        // Si no se encuentra "2b" pero hay un número solo al final (ej: gemma-4-2), lo usamos
+        if (sizePart.isEmpty()) {
+            val numMatch = Regex("-(\\d+)$").find(stem)
+            if (numMatch != null) sizePart = numMatch.groupValues[1] + "b"
+        }
+
+        // Limpiar el prefijo 'e' si existe para el tag final (ej: e2b -> 2b)
+        if (sizePart.startsWith("e")) {
+            sizePart = sizePart.substring(1)
+        }
+
+        // 3. Detectar si es una versión Instruct/Chat
+        val isInstruct = stem.contains("-it") || stem.contains("-instruct") || stem.contains("-chat")
+        val suffix = if (isInstruct) "-it" else ""
+
+        if (familyName.isNotEmpty() && sizePart.isNotEmpty()) {
+            return "$familyName:$sizePart$suffix"
+        }
+
+        // Fallback: Limpiar sufijos técnicos comunes
+        return stem.replace(Regex("[-_](gpu|cpu|int4|int8|fp16|fp32|q4|q8|q4_0|q4_k_m|instruct|chat|it|task|litert|gguf).*$"), "")
             .trim('-')
-
-        // Normalizar separadores de variante (7b, 3b, etc.)
-        return Regex("(\\d+\\.?\\d*b)").find(stem)?.let { match ->
-            val base    = stem.substringBefore(match.value).trimEnd('-')
-            val variant = match.value
-            "$base:$variant"
-        } ?: stem
     }
 
     private fun detectFamily(name: String): ModelFamily = when {
-        name.startsWith("gemma3")  -> ModelFamily.GEMMA3
-        name.startsWith("gemma")   -> ModelFamily.GEMMA2
-        name.startsWith("llama")   -> ModelFamily.LLAMA
-        name.startsWith("phi")     -> ModelFamily.PHI
-        name.startsWith("mistral") -> ModelFamily.MISTRAL
-        name.startsWith("qwen")    -> ModelFamily.QWEN
-        else                       -> ModelFamily.UNKNOWN
+        name.contains("gemma3") -> ModelFamily.GEMMA3
+        name.contains("gemma2") || name.contains("gemma-2") -> ModelFamily.GEMMA2
+        name.contains("gemma")  -> ModelFamily.GEMMA
+        name.contains("llama")  -> ModelFamily.LLAMA
+        name.contains("phi")    -> ModelFamily.PHI
+        name.contains("mistral")-> ModelFamily.MISTRAL
+        name.contains("qwen")   -> ModelFamily.QWEN
+        else                    -> ModelFamily.UNKNOWN
     }
 
     private fun buildDetails(name: String, file: File, family: ModelFamily): ModelDetails {
@@ -376,11 +427,24 @@ class ModelRegistry(
     }
 
     private fun computeDigest(file: File): String {
-        // Digest determinista basado en nombre + tamaño (evitar leer GBs para hash real)
-        val raw = "${file.name}:${file.length()}:${file.lastModified()}"
-        val hash = raw.hashCode().toUInt().toString(16).padStart(8, '0') +
-                file.length().toUInt().toString(16).padStart(16, '0')
-        return "sha256:${hash.padEnd(64, '0')}"
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            val buffer = ByteArray(1024 * 1024) // Leer solo 1MB para el hash (rápido)
+            file.inputStream().use { input ->
+                val read = input.read(buffer)
+                if (read > 0) md.update(buffer, 0, read)
+            }
+            // Añadir tamaño y fecha al hash para asegurar unicidad
+            md.update(file.length().toString().toByteArray())
+            md.update(file.lastModified().toString().toByteArray())
+            
+            val digest = md.digest()
+            "sha256:" + digest.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            // Fallback determinista si falla la lectura
+            val raw = "${file.name}:${file.length()}:${file.lastModified()}"
+            "sha256:" + raw.hashCode().toUInt().toString(16).padEnd(64, '0')
+        }
     }
 
     private fun buildDefaultModelfile(name: String, family: ModelFamily) = buildString {
@@ -405,7 +469,7 @@ class ModelRegistry(
     """.trimIndent()
 
     private fun buildTemplate(family: ModelFamily): String = when (family) {
-        ModelFamily.GEMMA2, ModelFamily.GEMMA3 -> """
+        ModelFamily.GEMMA, ModelFamily.GEMMA2, ModelFamily.GEMMA3 -> """
             <start_of_turn>user
             {{ if .System }}{{ .System }}
 
@@ -490,6 +554,7 @@ class ModelRegistry(
 
     private fun ModelEntry.toModelInfo() = ModelInfo(
         name = name,
+        model = name,
         modifiedAt = isoFormat(modifiedAt),
         size = size,
         digest = digest,
@@ -519,7 +584,8 @@ internal data class ModelEntry(
 
 /** Familias de modelos soportadas para templates y metadatos */
 internal enum class ModelFamily(val familyName: String) {
-    GEMMA2("gemma"),
+    GEMMA("gemma"),
+    GEMMA2("gemma2"),
     GEMMA3("gemma3"),
     LLAMA("llama"),
     PHI("phi3"),

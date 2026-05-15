@@ -74,6 +74,12 @@ class LlmServerService : Service() {
         const val EXTRA_STATE_ERROR = "state_error"
         const val EXTRA_STATE_SESSIONS = "state_sessions"
         const val EXTRA_STATE_TOKENS   = "state_tokens"
+        const val EXTRA_STATE_MAX_TOKENS = "state_max_tokens"
+
+        const val EXTRA_DEFAULT_NUM_CTX = "default_num_ctx"
+        const val EXTRA_DEFAULT_TEMP    = "default_temp"
+        const val EXTRA_DEFAULT_TOP_K   = "default_top_k"
+        const val EXTRA_DEFAULT_TOP_P   = "default_top_p"
 
         // Notificación
         private const val CHANNEL_ID      = "llm_server_channel"
@@ -89,11 +95,19 @@ class LlmServerService : Service() {
 
         fun startIntent(context: Context,
                         modelName: String = DEFAULT_MODEL_FILENAME,
-                        port: Int = DEFAULT_PORT) =
+                        port: Int = DEFAULT_PORT,
+                        numCtx: Int = 2048,
+                        temp: Float = 0.7f,
+                        topK: Int = 40,
+                        topP: Float = 0.9f) =
             Intent(context, LlmServerService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_MODEL_NAME, modelName)
                 putExtra(EXTRA_PORT, port)
+                putExtra(EXTRA_DEFAULT_NUM_CTX, numCtx)
+                putExtra(EXTRA_DEFAULT_TEMP, temp)
+                putExtra(EXTRA_DEFAULT_TOP_K, topK)
+                putExtra(EXTRA_DEFAULT_TOP_P, topP)
             }
 
         fun stopIntent(context: Context) =
@@ -120,6 +134,11 @@ class LlmServerService : Service() {
     private var currentPhase     = "IDLE"
     private var lastErrorMessage : String? = null
 
+    private var defaultNumCtx: Int = 2048
+    private var defaultTemp: Float = 0.7f
+    private var defaultTopK: Int = 40
+    private var defaultTopP: Float = 0.9f
+
     private var wakeLock : PowerManager.WakeLock? = null
     private var wifiLock : WifiManager.WifiLock?  = null
 
@@ -145,6 +164,11 @@ class LlmServerService : Service() {
 
                 currentModelName = intent.getStringExtra(EXTRA_MODEL_NAME) ?: DEFAULT_MODEL_FILENAME
                 currentPort      = intent.getIntExtra(EXTRA_PORT, DEFAULT_PORT)
+                
+                defaultNumCtx = intent.getIntExtra(EXTRA_DEFAULT_NUM_CTX, 2048)
+                defaultTemp    = intent.getFloatExtra(EXTRA_DEFAULT_TEMP, 0.7f)
+                defaultTopK   = intent.getIntExtra(EXTRA_DEFAULT_TOP_K, 40)
+                defaultTopP    = intent.getFloatExtra(EXTRA_DEFAULT_TOP_P, 0.9f)
 
                 startForeground(NOTIFICATION_ID, buildNotification("Iniciando…"))
                 acquireLocks()
@@ -195,15 +219,18 @@ class LlmServerService : Service() {
             updateNotification("Cargando modelo…")
 
             engine = LlmEngine(
-                context = applicationContext,
-                modelPath = modelFile.absolutePath
-            ).also { it.load() }
-            Log.i(TAG, "Modelo cargado: ${modelFile.absolutePath}")
+                context = applicationContext
+            ).apply {
+                defaultTemperature = defaultTemp
+                defaultTopK = defaultTopK
+                defaultTopP = defaultTopP
+            }
+            // Ya no cargamos aquí, se cargará por demanda en el router
+            Log.i(TAG, "Motor LlmEngine inicializado (esperando carga bajo demanda)")
 
             // 3. Inicializar registro
             registry = ModelRegistry(
-                modelsDir = modelsDir,
-                primaryModelFile = currentModelName
+                modelsDir = modelsDir
             ).also { reg ->
                 reg.initialize()
                 reg.setActiveModel(ModelRegistry.Companion.DEFAULT_PRIMARY_NAME)
@@ -243,12 +270,13 @@ class LlmServerService : Service() {
             while (isActive && isRunning.get()) {
                 val sessions = engine?.activeSessions ?: 0
                 val tokens   = engine?.totalTokensGenerated ?: 0L
+                val maxTokens = engine?.maxTokens ?: 2048
 
                 // Actualizar notificación con métricas actuales
                 updateNotification(buildMetricsText(sessions, tokens))
 
                 // También emitir broadcast para que la UI se actualice
-                broadcastCurrentState(sessions, tokens)
+                broadcastCurrentState(sessions, tokens, maxTokens)
 
                 delay(METRICS_REFRESH_MS)
             }
@@ -341,6 +369,7 @@ class LlmServerService : Service() {
     private fun broadcastCurrentState(
         sessions: Int    = engine?.activeSessions ?: 0,
         tokens  : Long   = engine?.totalTokensGenerated ?: 0L,
+        maxTokens: Int   = engine?.maxTokens ?: 2048,
         message : String = getDisplayMessage(sessions, tokens)
     ) {
         val intent = Intent(BROADCAST_STATE).apply {
@@ -351,6 +380,7 @@ class LlmServerService : Service() {
             putExtra(EXTRA_STATE_MODEL,    currentModelName)
             putExtra(EXTRA_STATE_SESSIONS, sessions)
             putExtra(EXTRA_STATE_TOKENS,   tokens)
+            putExtra(EXTRA_STATE_MAX_TOKENS, maxTokens)
             if (lastErrorMessage != null) putExtra(EXTRA_STATE_ERROR, lastErrorMessage)
         }
         sendBroadcast(intent)

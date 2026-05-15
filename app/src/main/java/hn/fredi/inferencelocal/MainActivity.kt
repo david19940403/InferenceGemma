@@ -57,6 +57,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -136,7 +138,14 @@ data class UiState(
     val model      : String   = "",
     val port       : Int      = LlmServerService.Companion.DEFAULT_PORT,
     val message    : String   = "Servidor detenido",
-    val errorDetail: String?  = null
+    val errorDetail: String?  = null,
+    val sessions   : Int      = 0,
+    val tokens     : Long     = 0L,
+    val maxTokens  : Int      = 12000,
+    val defTemp    : Float    = 0.7f,
+    val defTopK    : Int      = 40,
+    val defTopP    : Float    = 0.9f,
+    val defNumCtx  : Int      = 2048
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,6 +162,12 @@ fun LlmServerScreen() {
     var modelSelected by remember {
         mutableStateOf(getAvailableModels(context).firstOrNull() ?: LlmServerService.Companion.DEFAULT_MODEL_FILENAME)
     }
+    
+    // Estados para configuración por defecto
+    var configTemp   by remember { mutableStateOf(0.7f) }
+    var configTopK   by remember { mutableStateOf(40) }
+    var configTopP   by remember { mutableStateOf(0.9f) }
+    var configNumCtx by remember { mutableStateOf(2048) }
 
     // ── Broadcast receiver ───────────────────────────────────────────────────
     DisposableEffect(Unit) {
@@ -164,14 +179,17 @@ fun LlmServerScreen() {
                 val err   = intent.getStringExtra(LlmServerService.Companion.EXTRA_STATE_ERROR)
                 val port  = intent.getIntExtra(LlmServerService.Companion.EXTRA_STATE_PORT, LlmServerService.Companion.DEFAULT_PORT)
                 val model = intent.getStringExtra(LlmServerService.Companion.EXTRA_STATE_MODEL) ?: ""
+                val sessions = intent.getIntExtra(LlmServerService.Companion.EXTRA_STATE_SESSIONS, 0)
+                val tokens   = intent.getLongExtra(LlmServerService.Companion.EXTRA_STATE_TOKENS, 0L)
+                val maxTokens = intent.getIntExtra(LlmServerService.Companion.EXTRA_STATE_MAX_TOKENS, 2048)
 
                 ui = when (code) {
-                    "LOADING_MODEL"   -> UiState(UiPhase.LOADING_MODEL,  model, port, msg)
-                    "STARTING_SERVER" -> UiState(UiPhase.STARTING_SERVER, model, port, msg)
-                    "RUNNING"         -> UiState(UiPhase.RUNNING,         model, port, msg)
-                    "STOPPING"        -> UiState(UiPhase.STOPPING,        model, port, msg)
-                    "STOPPED"         -> UiState(UiPhase.IDLE,            model, port, "Servidor detenido")
-                    "ERROR"           -> UiState(UiPhase.ERROR,           model, port, msg, err)
+                    "LOADING_MODEL"   -> UiState(UiPhase.LOADING_MODEL,  model, port, msg, null, sessions, tokens, maxTokens)
+                    "STARTING_SERVER" -> UiState(UiPhase.STARTING_SERVER, model, port, msg, null, sessions, tokens, maxTokens)
+                    "RUNNING"         -> UiState(UiPhase.RUNNING,         model, port, msg, null, sessions, tokens, maxTokens)
+                    "STOPPING"        -> UiState(UiPhase.STOPPING,        model, port, msg, null, sessions, tokens, maxTokens)
+                    "STOPPED"         -> UiState(UiPhase.IDLE,            model, port, "Servidor detenido", null, 0, 0, 2048)
+                    "ERROR"           -> UiState(UiPhase.ERROR,           model, port, msg, err, sessions, tokens, maxTokens)
                     else              -> ui
                 }
             }
@@ -272,12 +290,39 @@ fun LlmServerScreen() {
                 isRunning = isRunning
             )
 
+            // ── Tarjeta de estadísticas ───────────────────────────────────────
+            AnimatedVisibility(
+                visible = isRunning,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                StatsCard(ui)
+            }
+
             // ── Selector de modelo ────────────────────────────────────────────
             ModelSelectorCard(
                 selectedModel = modelSelected,
                 isDisabled    = isRunning || isBusy,
                 onSelected    = { modelSelected = it }
             )
+
+            // ── Configuración de Modelo ───────────────────────────────────────
+            AnimatedVisibility(
+                visible = !isRunning && !isBusy,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                ModelConfigCard(
+                    temp = configTemp,
+                    onTempChange = { configTemp = it },
+                    topK = configTopK,
+                    onTopKChange = { configTopK = it },
+                    topP = configTopP,
+                    onTopPChange = { configTopP = it },
+                    numCtx = configNumCtx,
+                    onNumCtxChange = { configNumCtx = it }
+                )
+            }
 
             // ── Error ─────────────────────────────────────────────────────────
             AnimatedVisibility(
@@ -299,10 +344,18 @@ fun LlmServerScreen() {
                         context.startService(LlmServerService.Companion.stopIntent(context))
                         ui = ui.copy(phase = UiPhase.STOPPING, message = "Deteniendo…")
                     } else if (!isBusy) {
+                        val intent = LlmServerService.Companion.startIntent(
+                            context = context,
+                            modelName = modelSelected,
+                            numCtx = configNumCtx,
+                            temp = configTemp,
+                            topK = configTopK,
+                            topP = configTopP
+                        )
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                            context.startForegroundService(LlmServerService.Companion.startIntent(context, modelSelected))
+                            context.startForegroundService(intent)
                         else
-                            context.startService(LlmServerService.Companion.startIntent(context, modelSelected))
+                            context.startService(intent)
                         ui = ui.copy(phase = UiPhase.LOADING_MODEL, message = "Cargando modelo…")
                     }
                 }
@@ -357,7 +410,7 @@ private fun Header() {
             letterSpacing = (-0.5).sp
         )
         Text(
-            text          = "Servidor LLM · Android",
+            text          = "Direccion de desarrollo by Fredi Codificado por Geminy, Claude, Agradecimientos especiales a la documentacion de google y a los ejemplos faciles de leer.",
             fontSize      = 13.sp,
             fontWeight    = FontWeight.Normal,
             color         = TextSecond,
@@ -608,6 +661,58 @@ private fun ConnectionCard(ip: String, port: Int, isRunning: Boolean) {
 }
 
 @Composable
+private fun StatsCard(ui: UiState) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Surface1,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, BorderSubtle, RoundedCornerShape(16.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "ESTADÍSTICAS DEL MOTOR",
+                color = TextMuted,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                InfoPill(
+                    label = "CONTEXTO",
+                    value = "${ui.maxTokens}",
+                    accent = AccentAmber,
+                    modifier = Modifier.weight(1f)
+                )
+                InfoPill(
+                    label = "SESIONES",
+                    value = "${ui.sessions}",
+                    accent = AccentCyan,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            InfoPill(
+                label = "TOKENS GENERADOS",
+                value = formatTokens(ui.tokens),
+                accent = AccentGreen,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+private fun formatTokens(tokens: Long): String {
+    return when {
+        tokens < 1000 -> "$tokens"
+        tokens < 1000000 -> "%.1fK".format(tokens / 1000f)
+        else -> "%.1fM".format(tokens / 1000000f)
+    }
+}
+
+@Composable
 private fun InfoPill(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
@@ -650,6 +755,148 @@ private fun EndpointChip(label: String, color: Color) {
             color      = color.copy(alpha = 0.9f),
             fontSize   = 10.sp,
             fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Selector de modelo
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun ModelConfigCard(
+    temp: Float,
+    onTempChange: (Float) -> Unit,
+    topK: Int,
+    onTopKChange: (Int) -> Unit,
+    topP: Float,
+    onTopPChange: (Float) -> Unit,
+    numCtx: Int,
+    onNumCtxChange: (Int) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Surface1,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, BorderSubtle, RoundedCornerShape(16.dp))
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                text = "CONFIGURACIÓN POR DEFECTO",
+                color = TextMuted,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
+            )
+
+            // Temperature
+            ConfigSlider(
+                label = "Temperature",
+                value = temp,
+                valueRange = 0f..2f,
+                steps = 20,
+                displayValue = "%.2f".format(temp),
+                onValueChange = onTempChange
+            )
+
+            // Top-P
+            ConfigSlider(
+                label = "Top-P",
+                value = topP,
+                valueRange = 0f..1f,
+                steps = 10,
+                displayValue = "%.2f".format(topP),
+                onValueChange = onTopPChange
+            )
+
+            // Top-K
+            ConfigSlider(
+                label = "Top-K",
+                value = topK.toFloat(),
+                valueRange = 1f..100f,
+                steps = 100,
+                displayValue = topK.toString(),
+                onValueChange = { onTopKChange(it.toInt()) }
+            )
+
+            // Num Ctx
+            Text(
+                text = "Contexto (Tokens): $numCtx",
+                color = TextSecond,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(2048, 4096, 8192, 16384).forEach { size ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (numCtx == size) AccentCyan.copy(alpha = 0.2f) else BG2)
+                            .border(
+                                1.dp,
+                                if (numCtx == size) AccentCyan else BorderSubtle,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .clickable { onNumCtxChange(size) }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (size >= 1024) "${size / 1024}K" else "$size",
+                            color = if (numCtx == size) AccentCyan else TextSecond,
+                            fontSize = 11.sp,
+                            fontWeight = if (numCtx == size) FontWeight.Bold else FontWeight.Normal,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfigSlider(
+    label: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    displayValue: String,
+    onValueChange: (Float) -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                color = TextSecond,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            Text(
+                text = displayValue,
+                color = AccentCyan,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps,
+            colors = SliderDefaults.colors(
+                thumbColor = AccentCyan,
+                activeTrackColor = AccentCyan,
+                inactiveTrackColor = BorderSubtle
+            )
         )
     }
 }

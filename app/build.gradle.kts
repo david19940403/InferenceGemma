@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    kotlin("plugin.serialization") version "2.0.21"
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -34,6 +34,7 @@ android {
             )
         }
         debug {
+            resValue("string", "app_name", "Mi App (Debug)")
             applicationIdSuffix = ".debug"
             isDebuggable = true
         }
@@ -41,9 +42,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-    kotlinOptions {
-        jvmTarget = "17"
     }
     buildFeatures {
         compose = true
@@ -75,15 +73,26 @@ android {
 dependencies {
 
     implementation(libs.jetbrains.kotlinx.coroutines.android)
+    // LiteRT-LM
+    implementation(libs.litertlm.android)
+
+    // Standard LiteRT for Embeddings
+    implementation(libs.litert.core)
 
 
-    implementation(libs.tasks.genai)
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1") {
+        exclude(group = "org.tensorflow", module = "tensorflow-lite")
+        exclude(group = "org.tensorflow", module = "tensorflow-lite-api")
+    }
+
+    //implementation(libs.tasks.genai)
     // ── Ktor Server (Netty engine) ────────────────────────────
 
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.resources)
     implementation(libs.ktor.server.content.negotiation)
+    implementation(libs.ktor.server.cors)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.server.status.pages)
@@ -110,3 +119,10 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+

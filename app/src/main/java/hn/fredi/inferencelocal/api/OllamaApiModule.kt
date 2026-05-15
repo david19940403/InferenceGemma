@@ -17,6 +17,7 @@ import hn.fredi.inferencelocal.api.models.GenerateRequest
 import hn.fredi.inferencelocal.api.models.GenerateStreamChunk
 import hn.fredi.inferencelocal.api.models.LegacyEmbeddingsRequest
 import hn.fredi.inferencelocal.api.models.LegacyEmbeddingsResponse
+import hn.fredi.inferencelocal.api.models.ModelOptions
 import hn.fredi.inferencelocal.api.models.OaiChatRequest
 import hn.fredi.inferencelocal.api.models.OaiChatResponse
 import hn.fredi.inferencelocal.api.models.OaiChoice
@@ -42,8 +43,10 @@ import hn.fredi.inferencelocal.api.registry.ModelRegistry
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
+import io.ktor.server.plugins.callloging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.response.respond
@@ -82,6 +85,16 @@ private val apiJson = Json {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fun Application.ollamaApiModule() {
+
+    install(CallLogging)
+    install(CORS) {
+        anyHost()
+        allowHeader(HttpHeaders.ContentType)
+        allowHeader(HttpHeaders.Authorization)
+        allowMethod(HttpMethod.Options)
+        allowMethod(HttpMethod.Post)
+        allowMethod(HttpMethod.Get)
+    }
 
     install(ContentNegotiation) { json(apiJson) }
 
@@ -148,6 +161,21 @@ fun Application.ollamaApiModule() {
             // stream=true es el default de Ollama
             val wantStream = req.stream ?: true
 
+            // CARGA BAJO DEMANDA
+            val modelPath = registry.filePath(req.model)
+            if (modelPath != null) {
+                try {
+                    engine.load(modelPath, req.options)
+                    registry.setActiveModel(req.model)
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.InternalServerError, OllamaError("Failed to load model: ${e.message}"))
+                    return@post
+                }
+            } else {
+                call.respond(HttpStatusCode.NotFound, OllamaError("model file for '${req.model}' not found"))
+                return@post
+            }
+
             if (wantStream) {
                 streamHeaders()
                 call.respondBytesWriter(status = HttpStatusCode.OK) {
@@ -159,7 +187,8 @@ fun Application.ollamaApiModule() {
                                 content = req.system ?: "You are a helpful assistant."
                             ),
                             ChatMessage(role = "user", content = req.prompt)
-                        )
+                        ),
+                        options = req.options
                     )
                         .catch { e ->
                             // Error mid-stream: enviamos done=true con mensaje de error
@@ -246,6 +275,26 @@ fun Application.ollamaApiModule() {
             val registry = requireRegistry()
 
             val req = safeReceive<ChatRequest>() ?: return@post
+
+            if (!registry.exists(req.model)) {
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
+                return@post
+            }
+
+            // CARGA BAJO DEMANDA
+            val modelPath = registry.filePath(req.model)
+            if (modelPath != null) {
+                try {
+                    engine.load(modelPath, req.options)
+                    registry.setActiveModel(req.model)
+                } catch (e: Exception) {
+                    call.respond(HttpStatusCode.InternalServerError, OllamaError("Failed to load model: ${e.message}"))
+                    return@post
+                }
+            } else {
+                call.respond(HttpStatusCode.NotFound, OllamaError("model file for '${req.model}' not found"))
+                return@post
+            }
 
             // Caso especial: vaciar modelo de memoria
             if (req.messages.isEmpty()) {
@@ -575,6 +624,28 @@ fun Application.ollamaApiModule() {
                     return@post
                 }
 
+                // CARGA BAJO DEMANDA
+                val modelPath = registry.filePath(req.model)
+                val options = ModelOptions(
+                    temperature = req.temperature,
+                    topP = req.topP,
+                    numPredict = req.maxTokens,
+                    stop = req.stop
+                )
+
+                if (modelPath != null) {
+                    try {
+                        engine.load(modelPath, options)
+                        registry.setActiveModel(req.model)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, OllamaError("Failed to load model: ${e.message}"))
+                        return@post
+                    }
+                } else {
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model file for '${req.model}' not found"))
+                    return@post
+                }
+
                 val chatMessages = req.messages.map {
                     ChatMessage(role = it.role, content = it.content ?: "")
                 }
@@ -590,7 +661,7 @@ fun Application.ollamaApiModule() {
                     call.response.header("X-Accel-Buffering", "no")
 
                     call.respondBytesWriter(status = HttpStatusCode.OK) {
-                        engine.chatStream(messages = chatMessages)
+                        engine.chatStream(messages = chatMessages, options = options)
                             .catch { e ->
                                 val chunk = oaiStreamChunk(
                                     id      = completionId,
@@ -631,7 +702,7 @@ fun Application.ollamaApiModule() {
                             }
                     }
                 } else {
-                    val result = engine.chat(messages = chatMessages)
+                    val result = engine.chat(messages = chatMessages, options = options)
                     call.respond(HttpStatusCode.OK,
                         OaiChatResponse(
                             id = completionId,
@@ -676,7 +747,26 @@ fun Application.ollamaApiModule() {
                     return@post
                 }
 
-                val result = engine.generate(prompt = req.prompt)
+                // CARGA BAJO DEMANDA
+                val modelPath = registry.filePath(req.model)
+                val options = ModelOptions(
+                    temperature = req.temperature,
+                    numPredict = req.maxTokens
+                )
+                if (modelPath != null) {
+                    try {
+                        engine.load(modelPath, options)
+                        registry.setActiveModel(req.model)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, OllamaError("Failed to load model: ${e.message}"))
+                        return@post
+                    }
+                } else {
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model file for '${req.model}' not found"))
+                    return@post
+                }
+
+                val result = engine.generate(prompt = req.prompt, options = options)
                 call.respond(HttpStatusCode.OK,
                     OaiCompletionResponse(
                         id = "cmpl-${UUID.randomUUID()}",
@@ -714,6 +804,21 @@ fun Application.ollamaApiModule() {
                     call.respond(HttpStatusCode.NotFound,
                         OllamaError("model '${req.model}' not found")
                     )
+                    return@post
+                }
+
+                // CARGA BAJO DEMANDA
+                val modelPath = registry.filePath(req.model)
+                if (modelPath != null) {
+                    try {
+                        engine.load(modelPath)
+                        registry.setActiveModel(req.model)
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, OllamaError("Failed to load model: ${e.message}"))
+                        return@post
+                    }
+                } else {
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model file for '${req.model}' not found"))
                     return@post
                 }
 
@@ -784,14 +889,13 @@ private fun PipelineContext<Unit, ApplicationCall>.streamHeaders() {
     call.response.header(HttpHeaders.CacheControl, "no-cache")
     call.response.header(HttpHeaders.Connection, "keep-alive")
     call.response.header("X-Accel-Buffering", "no")   // Desactiva buffer en Nginx
-    call.response.header("Transfer-Encoding", "chunked")
 }
 
 private suspend fun PipelineContext<Unit, ApplicationCall>.requireEngine(): LlmEngine? {
     val engine = call.application.attributes.getOrNull(LlmEngineKey)
-    if (engine == null || !engine.isLoaded) {
+    if (engine == null) {
         call.respond(HttpStatusCode.ServiceUnavailable,
-            OllamaError("model not loaded — retry in a few seconds")
+            OllamaError("engine not initialized")
         )
         return null
     }

@@ -2,8 +2,14 @@ package hn.fredi.inferencelocal.api.engine
 
 import android.content.Context
 import android.util.Log
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SamplerConfig
 import hn.fredi.inferencelocal.api.models.ChatMessage
 import hn.fredi.inferencelocal.api.models.ModelOptions
 import hn.fredi.inferencelocal.api.models.StreamToken
@@ -12,38 +18,24 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.sqrt
 
 /**
- * LlmEngine con soporte de sesiones de chat reales para MediaPipe.
- *
- * ARQUITECTURA DE SESIONES:
- * ─────────────────────────
- * MediaPipe LLM no expone una API de sesión/chat directa como Ollama,
- * pero SÍ permite usar LlmInferenceSession (disponible desde MediaPipe 0.10.14+).
- * Si la versión disponible no la soporta, se hace fallback a prompt acumulado.
- *
- * Modo SESIÓN (preferido para WebUI/chat):
- *   - Cada conversación tiene su propia LlmInferenceSession.
- *   - El contexto se acumula dentro del motor; no hay que reenviar todo el historial.
- *   - Compatible con UIs que esperan respuestas delta (no texto acumulado).
- *
- * Modo PROMPT ACUMULADO (fallback):
- *   - Se construye un prompt Gemma con todo el historial en cada llamada.
- *   - Funciona en todas las versiones de MediaPipe.
- *
- * STREAMING DELTA:
- * ────────────────
- * MediaPipe llama al callback con texto ACUMULADO, no delta.
- * Este engine normaliza la salida para emitir solo el token nuevo,
- * lo cual es lo que esperan Open WebUI, Chatbot UI, etc.
+ * LlmEngine migrado a LiteRT-LM (com.google.ai.edge.litertlm).
+ * 
+ * Esta implementación reemplaza MediaPipe GenAI por el nuevo motor LiteRT-LM,
+ * manteniendo compatibilidad con la API de sesiones y streaming delta.
  */
 class LlmEngine(
-    private val context: Context,
-    private val modelPath: String
+    private val context: Context
 ) {
+
+    private var modelPath: String? = null
+    private val loadMutex = Mutex()
 
     companion object {
         private const val TAG = "LlmEngine"
@@ -51,96 +43,163 @@ class LlmEngine(
             "You are a helpful assistant. Answer directly and concisely."
         private const val LOG_PROMPT_PREVIEW = 800
 
-        // ID de sesión por defecto para clientes que no mandan session_id
+        // ID de sesión por defecto
         private const val DEFAULT_SESSION_ID = "default"
+
+        init {
+            try {
+                // LiteRT-LM requiere cargar la librería nativa LiteRt
+                System.loadLibrary("LiteRt")
+                Log.i(TAG, "Loaded libLiteRt.so")
+            } catch (e: Throwable) {
+                Log.w(TAG, "Native library load warning: ${e.message}")
+            }
+        }
     }
 
-    // ─── Motor principal ───────────────────────────────────────────────────
-    private var inference: LlmInference? = null
-    private var currentOptions: ModelOptions? = null
+    private var engine: Engine? = null
+    // Mapa de conversaciones para soportar múltiples sesiones de chat con estado
+    private val conversations = mutableMapOf<String, Conversation>()
+    
+    private var isInitialized = false
+    private var currentCtx = 2048
+    val maxTokens: Int get() = currentCtx
 
-    // ─── Gestión de sesiones de chat ───────────────────────────────────────
-    // Clave: sessionId  Valor: historial de mensajes de esa sesión
-    private val sessionHistories = mutableMapOf<String, MutableList<ChatMessage>>()
+    // Parametros por defecto configurables
+    var defaultTemperature: Float = 0.7f
+    var defaultTopK: Int = 40
+    var defaultTopP: Float = 0.9f
 
-    // Métricas globales (thread-safe, visibles desde el Service para la notificación)
-    /** Tokens totales generados desde que se cargó el modelo */
+    // Métricas globales
     private val _totalTokensGenerated = AtomicLong(0L)
     val totalTokensGenerated: Long get() = _totalTokensGenerated.get()
-
-    /** Número de sesiones activas (clientes conectados con historial) */
-    val activeSessions: Int get() = sessionHistories.size
+    val activeSessions: Int get() = conversations.size
 
     // ─────────────────────────────────────────────────────────────────────────
     // Ciclo de vida del motor
     // ─────────────────────────────────────────────────────────────────────────
 
-    suspend fun load(options: ModelOptions? = null) = withContext(Dispatchers.IO) {
-        currentOptions = options
-        inference = loadWithFallback(options)
-        Log.i(TAG, "Motor cargado. maxTokens=${options?.numPredict ?: 2048}")
-    }
-
-    private fun loadWithFallback(options: ModelOptions?): LlmInference {
-        val builder = LlmInferenceOptions.builder()
-            .setModelPath(modelPath)
-            .setMaxTokens(options?.numPredict ?: 2048)
-        // Nota: temperature y topK se configuran aquí si tu versión de MediaPipe lo permite:
-        // .setTemperature(options?.temperature ?: 0.8f)
-        // .setTopK(options?.topK ?: 40)
-
-        return try {
-            val opts = builder.setPreferredBackend(LlmInference.Backend.GPU).build()
-            LlmInference.createFromOptions(context, opts).also {
-                Log.i(TAG, "Backend: GPU ✓")
+    suspend fun load(path: String, options: ModelOptions? = null) = loadMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val file = java.io.File(path)
+            if (!file.exists()) {
+                throw Exception("El archivo del modelo no existe en la ruta: $path")
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "GPU no disponible, usando CPU: ${e.message}")
-            val opts = builder.setPreferredBackend(LlmInference.Backend.CPU).build()
-            LlmInference.createFromOptions(context, opts).also {
-                Log.i(TAG, "Backend: CPU ✓")
+
+            val requestedCtx = options?.numCtx ?: 2048
+            if (isInitialized && path == modelPath && requestedCtx == currentCtx) {
+                Log.d(TAG, "El modelo ya está cargado con el mismo contexto: $path")
+                return@withContext
             }
+
+            Log.i(TAG, "Iniciando carga de modelo: ${file.name} (Contexto: $requestedCtx)")
+            
+            // Validación de formato GGUF (Incompatible con LiteRT-LM)
+            if (isGguf(file)) {
+                throw Exception("El archivo ${file.name} está en formato GGUF. LiteRT-LM solo soporta modelos LiteRT (.tflite). Por favor descarga la versión 'LiteRT' desde Kaggle o HuggingFace.")
+            }
+
+            modelPath = path
+            unloadInternal()
+
+            val backends = listOf(
+                "GPU" to { Backend.GPU() },
+                "CPU" to { Backend.CPU() }
+            )
+
+            var lastError: Throwable? = null
+            for ((name, factory) in backends) {
+                try {
+                    Log.d(TAG, "Intentando inicializar con backend $name...")
+                    val backend = factory()
+                    val config = EngineConfig(
+                        modelPath = path,
+                        backend = backend,
+                        visionBackend = null,
+                        audioBackend = null,
+                        maxNumTokens = options?.numCtx ?: 2048,
+                        maxNumImages = null,
+                        cacheDir = context.cacheDir.path
+                    )
+                    
+                    val newEngine = Engine(config)
+                    newEngine.initialize()
+                    engine = newEngine
+                    isInitialized = true
+                    currentCtx = requestedCtx
+                    Log.i(TAG, "Motor LiteRT-LM cargado exitosamente usando $name ✓")
+                    return@withContext
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Error con backend $name: ${e.message}")
+                    lastError = e
+                }
+            }
+            
+            val finalMsg = "Error al crear el motor para ${file.name}: ${lastError?.message}. " +
+                          "Asegúrate de que no sea un archivo corrupto o un bundle .task incompatible."
+            throw Exception(finalMsg)
         }
     }
 
-    fun unload() {
-        inference?.close()
-        inference = null
-        sessionHistories.clear()
-        _totalTokensGenerated.set(0L)
-        Log.i(TAG, "Motor descargado y sesiones eliminadas.")
+    private fun isGguf(file: java.io.File): Boolean {
+        return try {
+            file.inputStream().use { input ->
+                val magic = ByteArray(4)
+                input.read(magic)
+                String(magic) == "GGUF"
+            }
+        } catch (e: Exception) {
+            false
+        }
     }
 
-    val isLoaded: Boolean get() = inference != null
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // API de Sesiones (para WebUI / Chatbot UI / Open WebUI)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Crea o recupera una sesión de chat.
-     * WebUI típicamente envía los mensajes completos en cada request,
-     * pero si queremos estado real, usamos sessionId como clave.
-     */
-    fun getOrCreateSession(sessionId: String = DEFAULT_SESSION_ID): List<ChatMessage> {
-        return sessionHistories.getOrPut(sessionId) { mutableListOf() }
+    suspend fun unload() = loadMutex.withLock {
+        unloadInternal()
     }
 
-    /**
-     * Elimina una sesión específica (equivalente a "New Chat").
-     */
+    private fun unloadInternal() {
+        try {
+            conversations.values.forEach { it.close() }
+            conversations.clear()
+            engine?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error al descargar el motor: ${e.message}")
+        } finally {
+            engine = null
+            modelPath = null // Reset modelPath too
+            isInitialized = false
+            _totalTokensGenerated.set(0L)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Gestión de Sesiones
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private fun getOrCreateConversation(sessionId: String, options: ModelOptions?): Conversation {
+        val eng = engine ?: throw IllegalStateException("Motor no inicializado. Llama a load() primero.")
+        return conversations.getOrPut(sessionId) {
+            val config = ConversationConfig(
+                samplerConfig = SamplerConfig(
+                    temperature = (options?.temperature ?: defaultTemperature).toDouble(),
+                    topK = options?.topK ?: defaultTopK,
+                    topP = (options?.topP ?: defaultTopP).toDouble()
+                )
+            )
+            Log.d(TAG, "Creando sesión '$sessionId' con num_ctx=${options?.numCtx ?: currentCtx}")
+            eng.createConversation(config)
+        }
+    }
+
     fun clearSession(sessionId: String = DEFAULT_SESSION_ID) {
-        sessionHistories.remove(sessionId)
+        conversations.remove(sessionId)?.close()
         Log.d(TAG, "Sesión '$sessionId' eliminada.")
     }
 
-    /**
-     * Lista todas las sesiones activas.
-     */
-    fun listSessions(): Set<String> = sessionHistories.keys.toSet()
+    fun listSessions(): Set<String> = conversations.keys.toSet()
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Generación Síncrona (prompt directo, sin historial)
+    // Generación Síncrona
     // ─────────────────────────────────────────────────────────────────────────
 
     suspend fun generate(
@@ -148,74 +207,55 @@ class LlmEngine(
         system: String? = null,
         options: ModelOptions? = null
     ): GenerationResult = withContext(Dispatchers.IO) {
-        val llm = requireNotNull(inference) { "Modelo no cargado. Llama a load() primero." }
-        val startMs = System.currentTimeMillis()
-
-        val formattedPrompt = buildGemmaPrompt(
-            userText = prompt,
-            systemText = system ?: DEFAULT_SYSTEM_PROMPT
-        )
+        val sid = "temp_gen_${System.currentTimeMillis()}"
+        val formattedPrompt = buildGemmaPrompt(prompt, system ?: DEFAULT_SYSTEM_PROMPT)
         logPrompt("generate", formattedPrompt)
 
-        val response = llm.generateResponse(formattedPrompt)
-        val elapsed = System.currentTimeMillis() - startMs
-        val clean = cleanResponse(response)
+        var finalResponse = ""
+        try {
+            val conv = getOrCreateConversation(sid, options)
+            conv.sendMessageAsync(formattedPrompt).collect { result ->
+                Log.v("LlmEngine", "Delta: ${result.text}")
+                finalResponse += result.text
+            }
+        } finally {
+            clearSession(sid)
+        }
 
-        Log.d(TAG, "generate: ${clean.length} chars en ${elapsed}ms")
-
+        val clean = cleanResponse(finalResponse)
         GenerationResult(
             text = clean,
-            totalDurationNs = elapsed * 1_000_000L,
+            totalDurationNs = 0,
             evalCount = estimateTokens(clean)
         ).also {
             _totalTokensGenerated.addAndGet(it.evalCount.toLong())
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Chat Síncrono con gestión de sesión
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Ejecuta un turno de chat.
-     *
-     * @param messages  Lista completa de mensajes (como manda Open WebUI).
-     *                  Si [sessionId] no es null, el historial se FUSIONA con
-     *                  el estado interno para evitar duplicados.
-     * @param sessionId ID de sesión opcional. Si es null, usa solo [messages].
-     * @param options   Opciones de generación.
-     */
     suspend fun chat(
         messages: List<ChatMessage>,
         sessionId: String? = null,
         options: ModelOptions? = null
     ): GenerationResult = withContext(Dispatchers.IO) {
-        val llm = requireNotNull(inference) { "Modelo no cargado." }
-        val startMs = System.currentTimeMillis()
-
-        // Resolvemos el historial final
-        val resolvedMessages = resolveMessages(messages, sessionId)
-        val prompt = buildGemmaChatPrompt(resolvedMessages)
+        val sid = sessionId ?: "temp_chat_${System.currentTimeMillis()}"
+        val prompt = buildGemmaChatPrompt(messages)
         logPrompt("chat", prompt)
 
-        val response = llm.generateResponse(prompt)
-        val elapsed = System.currentTimeMillis() - startMs
-        val clean = cleanResponse(response)
-
-        // Guardamos en sesión si corresponde
-        sessionId?.let { sid ->
-            val history = sessionHistories.getOrPut(sid) { mutableListOf() }
-            // Agregamos solo el último mensaje del usuario y la respuesta
-            val lastUser = resolvedMessages.lastOrNull { it.role.lowercase() == "user" }
-            lastUser?.let { history.add(it) }
-            history.add(ChatMessage(role = "assistant", content = clean))
+        var finalResponse = ""
+        try {
+            val conv = getOrCreateConversation(sid, options)
+            conv.sendMessageAsync(prompt).collect { result ->
+                Log.v("LlmEngine", "Delta: ${result.text}")
+                finalResponse += result.text
+            }
+        } finally {
+            if (sessionId == null) clearSession(sid)
         }
 
-        Log.d(TAG, "chat[$sessionId]: ${clean.length} chars en ${elapsed}ms")
-
+        val clean = cleanResponse(finalResponse)
         GenerationResult(
             text = clean,
-            totalDurationNs = elapsed * 1_000_000L,
+            totalDurationNs = 0,
             evalCount = estimateTokens(clean)
         ).also {
             _totalTokensGenerated.addAndGet(it.evalCount.toLong())
@@ -223,172 +263,44 @@ class LlmEngine(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Streaming con Delta real (compatible con Open WebUI / SSE)
+    // Streaming con Delta real
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Streaming de chat. Emite tokens DELTA (solo el texto nuevo),
-     * no el texto acumulado que entrega MediaPipe internamente.
-     *
-     * Esto es crítico para compatibilidad con:
-     *   - Open WebUI (espera chunks SSE estilo OpenAI)
-     *   - Chatbot UI
-     *   - Cualquier cliente que concatene los chunks él mismo
-     *
-     * @param messages  Historial completo de mensajes.
-     * @param sessionId Si se provee, el historial se gestiona internamente.
-     * @param options   Opciones de generación.
-     */
     fun chatStream(
         messages: List<ChatMessage>,
         sessionId: String? = null,
         options: ModelOptions? = null
     ): Flow<StreamToken> = callbackFlow {
-        val llm = inference ?: throw IllegalStateException("Modelo no cargado.")
-
-        val resolvedMessages = resolveMessages(messages, sessionId)
-        val prompt = buildGemmaChatPrompt(resolvedMessages)
+        val sid = sessionId ?: "temp_stream_${System.currentTimeMillis()}"
+        val prompt = buildGemmaChatPrompt(messages)
         logPrompt("stream", prompt)
 
-        // Buffer para calcular delta (MediaPipe envía texto ACUMULADO)
-        var accumulatedText = ""
-        val fullResponseBuilder = StringBuilder()
+        try {
+            val conv = getOrCreateConversation(sid, options)
+            var tokenCount = 0
+            val maxTokens = options?.numPredict ?: Int.MAX_VALUE
 
-        llm.generateResponseAsync(prompt) { partialResult, done ->
-            val chunk = partialResult ?: ""
-
-            if (chunk.isNotEmpty()) {
-                // Calcular el delta real
-                val delta = if (chunk.length > accumulatedText.length) {
-                    chunk.substring(accumulatedText.length)
-                } else {
-                    // MediaPipe reinició el buffer (raro pero posible)
-                    chunk
-                }
-                accumulatedText = chunk
-                fullResponseBuilder.append(delta)
-
-                // Emitir solo el delta al cliente
-                if (delta.isNotEmpty()) {
+            conv.sendMessageAsync(prompt).collect { result ->
+                val delta = result.text
+                if (delta.isNotEmpty() && tokenCount < maxTokens) {
+                    tokenCount++
+                    _totalTokensGenerated.incrementAndGet()
                     trySend(StreamToken(text = delta, isDone = false))
                 }
             }
-
-            if (done) {
-                // Acumular tokens globales al finalizar el stream
-                val finalText = cleanResponse(fullResponseBuilder.toString())
-                _totalTokensGenerated.addAndGet(estimateTokens(finalText).toLong())
-
-                // Token final vacío con isDone=true (compatible con formato OpenAI)
-                trySend(StreamToken(text = "", isDone = true))
-
-                // Guardar en sesión si corresponde
-                sessionId?.let { sid ->
-                    val history = sessionHistories.getOrPut(sid) { mutableListOf() }
-                    val lastUser = resolvedMessages.lastOrNull { it.role.lowercase() == "user" }
-                    lastUser?.let { history.add(it) }
-                    history.add(ChatMessage(role = "assistant", content = finalText))
-                    Log.d(TAG, "stream[$sid]: sesión guardada, ${finalText.length} chars")
-                }
-
-                close()
-            }
-        }
-
-        awaitClose {
-            Log.d(TAG, "Stream flow cerrado.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error en stream: ${e.message}")
+        } finally {
+            trySend(StreamToken(text = "", isDone = true))
+            if (sessionId == null) clearSession(sid)
+            close()
         }
     }.flowOn(Dispatchers.IO)
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Generación Síncrona con Streaming interno (para endpoints que lo necesitan)
+    // Formateo de Prompts (Gemma 2 IT)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Versión de generate() con streaming interno, útil para prompts largos
-     * donde quieres progreso sin exponer el Flow al llamador.
-     */
-    suspend fun generateWithProgress(
-        prompt: String,
-        system: String? = null,
-        onToken: (String) -> Unit = {}
-    ): GenerationResult = withContext(Dispatchers.IO) {
-        val llm = requireNotNull(inference) { "Modelo no cargado." }
-        val startMs = System.currentTimeMillis()
-        val formattedPrompt = buildGemmaPrompt(prompt, system ?: DEFAULT_SYSTEM_PROMPT)
-
-        val fullBuilder = StringBuilder()
-        var lastLength = 0
-
-        // Usamos un mutex ligero con wait/notify
-        val lock = Object()
-        var generationDone = false
-
-        llm.generateResponseAsync(formattedPrompt) { partial, done ->
-            val chunk = partial ?: ""
-            if (chunk.length > lastLength) {
-                val delta = chunk.substring(lastLength)
-                lastLength = chunk.length
-                fullBuilder.append(delta)
-                onToken(delta)
-            }
-            if (done) {
-                synchronized(lock) {
-                    generationDone = true
-                    lock.notifyAll()
-                }
-            }
-        }
-
-        // Esperamos a que termine
-        synchronized(lock) {
-            while (!generationDone) lock.wait(100)
-        }
-
-        val elapsed = System.currentTimeMillis() - startMs
-        val clean = cleanResponse(fullBuilder.toString())
-
-        GenerationResult(
-            text = clean,
-            totalDurationNs = elapsed * 1_000_000L,
-            evalCount = estimateTokens(clean)
-        ).also {
-            _totalTokensGenerated.addAndGet(it.evalCount.toLong())
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Resolución de historial (fusión sesión interna + mensajes del cliente)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Estrategia de fusión de mensajes:
-     *
-     * Open WebUI y similares siempre mandan el historial COMPLETO en cada request.
-     * Si tenemos una sesión interna, PRIORIZAMOS los mensajes del cliente
-     * (son la fuente de verdad), pero los usamos para actualizar nuestra sesión.
-     *
-     * Si NO hay sesión, simplemente usamos los mensajes tal como vienen.
-     */
-    private fun resolveMessages(
-        incomingMessages: List<ChatMessage>,
-        sessionId: String?
-    ): List<ChatMessage> {
-        if (sessionId == null) return incomingMessages
-
-        // El cliente manda el historial completo → lo usamos directamente
-        // pero actualizamos nuestra sesión interna para tracking
-        sessionHistories[sessionId] = incomingMessages.toMutableList()
-        return incomingMessages
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Formateo de Prompts Gemma 2
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Prompt simple de un turno (para generate()).
-     */
     private fun buildGemmaPrompt(userText: String, systemText: String): String = buildString {
         append("<start_of_turn>user\n")
         append("$systemText\n\n${userText.trim()}")
@@ -396,18 +308,6 @@ class LlmEngine(
         append("<start_of_turn>model\n")
     }
 
-    /**
-     * Prompt multi-turno para chat. Sigue el formato Gemma 2 IT estrictamente.
-     *
-     * Formato esperado:
-     *   <start_of_turn>user
-     *   [system + primer mensaje]<end_of_turn>
-     *   <start_of_turn>model
-     *   [respuesta]<end_of_turn>
-     *   ...
-     *   <start_of_turn>model
-     *   ← el modelo continúa desde aquí
-     */
     private fun buildGemmaChatPrompt(messages: List<ChatMessage>): String = buildString {
         val systemMsg = messages
             .firstOrNull { it.role.lowercase() == "system" }
@@ -425,32 +325,16 @@ class LlmEngine(
             }
 
             append("<start_of_turn>$gemmaRole\n")
-
-            when {
-                // Primer mensaje del usuario → inyectamos system prompt
-                index == 0 && gemmaRole == "user" -> {
-                    append("$systemMsg\n\n${msg.content.trim()}")
-                }
-                // Último mensaje del usuario → re-inyectamos para reforzar instrucciones
-                index == chatTurns.lastIndex && gemmaRole == "user" -> {
-                    append(msg.content.trim())
-                }
-                // Resto de turnos → contenido limpio
-                else -> {
-                    append(msg.content.trim())
-                }
+            if (index == 0 && gemmaRole == "user") {
+                append("$systemMsg\n\n${msg.content.trim()}")
+            } else {
+                append(msg.content.trim())
             }
-
             append("<end_of_turn>\n")
         }
-
-        // Señal de inicio de respuesta del modelo
         append("<start_of_turn>model\n")
     }
 
-    /**
-     * Limpia artefactos del formato Gemma que puedan filtrarse en la respuesta.
-     */
     private fun cleanResponse(text: String): String = text
         .replace(Regex("<start_of_turn>(user|model)\n?"), "")
         .replace("<end_of_turn>", "")
@@ -458,26 +342,18 @@ class LlmEngine(
         .trim()
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Embeddings (deterministas — MediaPipe LLM no soporta embeddings nativos)
+    // Utilidades
     // ─────────────────────────────────────────────────────────────────────────
 
     suspend fun embed(text: String): List<Float> = withContext(Dispatchers.IO) {
-        generateDeterministicEmbedding(text, 384)
-    }
-
-    private fun generateDeterministicEmbedding(text: String, dimensions: Int): List<Float> {
-        val vector = FloatArray(dimensions)
+        val vector = FloatArray(384)
         text.forEachIndexed { i, char ->
-            val idx = (char.code + i) % dimensions
+            val idx = (char.code + i) % 384
             vector[idx] += 1.0f
         }
         val norm = sqrt(vector.map { it * it }.sum())
-        return if (norm > 0f) vector.map { it / norm } else vector.toList()
+        if (norm > 0f) vector.map { it / norm } else vector.toList()
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Utilidades
-    // ─────────────────────────────────────────────────────────────────────────
 
     private fun estimateTokens(text: String): Int = (text.length / 4).coerceAtLeast(1)
 
@@ -490,9 +366,17 @@ class LlmEngine(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Modelos de datos
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Propiedad de extensión para extraer el texto puro de un mensaje de LiteRT-LM.
+ * Filtra los contenidos para obtener solo las partes de texto y unirlas.
+ */
+private val Message.text: String
+    get() = contents.contents.joinToString("") { content ->
+        when (content) {
+            is Content.Text -> content.text
+            else -> "" // Ignorar otros tipos como imágenes por ahora
+        }
+    }
 
 data class GenerationResult(
     val text: String,
