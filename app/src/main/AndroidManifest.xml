@@ -41,7 +41,7 @@
         android:hardwareAccelerated="true"
         tools:targetApi="31">
         <activity
-            android:name=".MainActivity"
+            android:name="hn.fredi.inferencelocal.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.InferenceLocal">
@@ -60,7 +60,7 @@
             Documenta el uso en el formulario de revisión de Google Play.
         -->
         <service
-            android:name=".service.LlmServerService"
+            android:name="hn.fredi.inferencelocal.service.LlmServerService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync">

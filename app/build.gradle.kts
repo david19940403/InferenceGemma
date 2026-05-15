@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "hn.kwikstop.inferencelocal"
+    namespace = "hn.fredi.inferencelocal"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "hn.kwikstop.inferencelocal"
+        applicationId = "hn.fredi.inferencelocal"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -76,8 +76,8 @@ dependencies {
 
     implementation(libs.jetbrains.kotlinx.coroutines.android)
 
-    implementation(libs.tasks.genai)
 
+    implementation(libs.tasks.genai)
     // ── Ktor Server (Netty engine) ────────────────────────────
 
     implementation(libs.ktor.server.core)
