@@ -18,18 +18,24 @@ data class ChatMessage(
     val workerId: String? = null,
     /** Tool calls hechos por el asistente (opcional) */
     @SerialName("tool_calls")
-    val toolCalls: List<ToolCall>? = null
+    val toolCalls: List<ToolCall>? = null,
+    /** ID del tool call al que responde este mensaje (solo para role=tool) */
+    @SerialName("tool_call_id")
+    val toolCallId: String? = null
 )
 
 @Serializable
 data class ToolCall(
+    val id: String = "call_${java.util.UUID.randomUUID().toString().take(8)}",
+    val type: String = "function",
     val function: ToolCallFunction
 )
 
 @Serializable
 data class ToolCallFunction(
     val name: String,
-    val arguments: Map<String, String> = emptyMap()
+    /** Argumentos en formato JSON string o mapa (depende del cliente) */
+    val arguments: String = "{}"
 )
 
 /** Opciones de generación mapeadas a parámetros de Ollama */

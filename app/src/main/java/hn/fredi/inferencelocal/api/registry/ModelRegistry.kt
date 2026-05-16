@@ -417,10 +417,17 @@ class ModelRegistry(
             else                                         -> "Q4_0"
         }
 
+        // Determinar si la familia soporta herramientas (Ollama usa esto para habilitar UI de tools)
+        val families = mutableListOf(family.familyName)
+        if (family != ModelFamily.UNKNOWN && family != ModelFamily.GEMMA) {
+            // Gemma 1 no soporta herramientas nativamente tan bien como Gemma 2/3 o Llama 3
+            families.add("tools")
+        }
+
         return ModelDetails(
             format = if (file.extension == "gguf") "gguf" else "litert",
             family = family.familyName,
-            families = listOf(family.familyName),
+            families = families,
             parameterSize = paramSize,
             quantizationLevel = quant
         )

@@ -68,37 +68,26 @@ class LlmEngine(
         }
     }
 
-    private var engine: Engine? = null
-    // Mapa de conversaciones con límite dinámico
-    var maxSessions: Int = 1
-
-    // Nuevas propiedades en la clase:
-    var inactivityTimeoutMs: Long = 5 * 60 * 1000L // 5 minutos por defecto (0 = desactivado)
-    private var lastActivityTime: Long = 0L
-    private var inactivityJob: Job? = null
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var engine: Engine? = null
+    private val sessionManager = SessionManager(engineScope) {
+        unload()
+    }
 
+    // Proporciones dinámicas configurables
+    var maxSessions: Int 
+        get() = sessionManager.maxSessions
+        set(value) { sessionManager.maxSessions = value }
+
+    var inactivityTimeoutMs: Long
+        get() = sessionManager.inactivityTimeoutMs
+        set(value) { sessionManager.inactivityTimeoutMs = value }
 
     private fun getAvailableRam(): Long {
         val mi = ActivityManager.MemoryInfo()
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         activityManager.getMemoryInfo(mi)
         return mi.availMem
-    }
-    
-    private val conversations = object : LinkedHashMap<String, Conversation>(10, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Conversation>?): Boolean {
-            if (size > maxSessions) { 
-                try {
-                    eldest?.value?.close()
-                    Log.i(TAG, "RAM Recovery: Cerrando sesión antigua '${eldest?.key}'")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error liberando sesión: ${e.message}")
-                }
-                return true
-            }
-            return false
-        }
     }
     
     private var isInitialized = false
@@ -121,7 +110,7 @@ class LlmEngine(
     // Métricas globales
     private val _totalTokensGenerated = AtomicLong(0L)
     val totalTokensGenerated: Long get() = _totalTokensGenerated.get()
-    val activeSessions: Int get() = conversations.size
+    val activeSessions: Int get() = sessionManager.getActiveSessionsCount()
 
     // Métricas de rendimiento
     var lastInitTimeMs: Long = 0
@@ -141,7 +130,11 @@ class LlmEngine(
                 name.contains("multimodal") ||
                 name.contains("4b") ||      // Gemma 4 es multimodal
                 name.contains("gemma3n") || // Gemma 3n es multimodal
-                name.contains("gemma-4")
+                name.contains("gemma-4") ||
+                name.contains("llava") ||
+                name.contains("paligemma") ||
+                name.contains("moondream") ||
+                name.contains("pixtral")
     }
     suspend fun load(path: String, options: ModelOptions? = null) = loadMutex.withLock {
         withContext(Dispatchers.IO) {
@@ -211,12 +204,6 @@ class LlmEngine(
                 // Si eligió GPU o CPU explícitamente, igual ponemos los otros al final por si acaso
                 if (pref != "GPU") backends.add("GPU" to { Backend.GPU() })
                 if (pref != "CPU") backends.add("CPU" to { Backend.CPU() })
-                /*if ((isSamsung || isPixel) && pref != "NPU") {
-                    backends.add("NPU" to {
-                        configureNativeRuntime(nativeLibraryDir)
-                        Backend.NPU(nativeLibraryDir = nativeLibraryDir)
-                    })
-                }*/
             }
 
             var lastError: Throwable? = null
@@ -246,7 +233,7 @@ class LlmEngine(
                         modelPath = path,
                         backend = backend,
                         maxNumTokens = requestedCtx,
-                        maxNumImages = 1,
+                        maxNumImages = if (visionBackend != null) 1 else 0,
                         cacheDir = context.cacheDir.path,
                         visionBackend = visionBackend
                     )
@@ -309,18 +296,15 @@ class LlmEngine(
     }
 
     private fun unloadInternal() {
-        inactivityJob?.cancel()  // ← añadir
-        inactivityJob = null     // ← añadir
         try {
             Log.d(TAG, "Descargando motor y sesiones...")
-            conversations.values.forEach { it.close() }
-            conversations.clear()
+            sessionManager.closeAll()
             engine?.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error al descargar el motor: ${e.message}")
         } finally {
             engine = null
-            modelPath = null // Reset modelPath too
+            modelPath = null
             isInitialized = false
             _totalTokensGenerated.set(0L)
             System.gc()
@@ -332,73 +316,25 @@ class LlmEngine(
     // Gestión de Sesiones
     // ─────────────────────────────────────────────────────────────────────────
 
-    private fun getOrCreateConversation(sessionId: String, options: ModelOptions?): Conversation {
+    private suspend fun getOrCreateConversation(sessionId: String, options: ModelOptions?): Conversation {
         val eng = engine ?: throw IllegalStateException("Motor no inicializado. Llama a load() primero.")
-        return conversations.getOrPut(sessionId) {
-            val config = ConversationConfig(
-                samplerConfig = SamplerConfig(
-                    temperature = (options?.temperature ?: defaultTemperature).toDouble(),
-                    topK = options?.topK ?: defaultTopK,
-                    topP = (options?.topP ?: defaultTopP).toDouble()
-                )
-            )
-            Log.d(TAG, "Creando sesión '$sessionId' con num_ctx=${options?.numCtx ?: currentCtx}")
-            eng.createConversation(config)
-        }
+        return sessionManager.getOrCreateConversation(eng, sessionId, options)
     }
 
-    fun clearSession(sessionId: String = DEFAULT_SESSION_ID) {
-        conversations.remove(sessionId)?.close()
-        Log.d(TAG, "Sesión '$sessionId' eliminada.")
-    }
+    suspend fun clearSession(sessionId: String = DEFAULT_SESSION_ID) = sessionManager.clearSession(sessionId)
 
-    fun listSessions(): Set<String> = conversations.keys.toSet()
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Generación Síncrona
-    // ─────────────────────────────────────────────────────────────────────────
-
-    suspend fun generate(
-        prompt: String,
-        system: String? = null,
-        options: ModelOptions? = null
-    ): GenerationResult = withContext(Dispatchers.IO) {
-        resetInactivityTimer()
-        val sid = "temp_gen_${System.currentTimeMillis()}"
-        val formattedPrompt = buildGemmaPrompt(prompt, system ?: DEFAULT_SYSTEM_PROMPT)
-        val contents = Contents.of(Content.Text(formattedPrompt))
-        checkContextLimit(contents, options?.numCtx)
-        logPrompt("generate", formattedPrompt)
-
-        var finalResponse = ""
-        try {
-            val conv = getOrCreateConversation(sid, options)
-            conv.sendMessageAsync(formattedPrompt).collect { result ->
-                Log.v("LlmEngine", "Delta: ${result.text}")
-                finalResponse += result.text
-            }
-        } finally {
-            clearSession(sid)
-        }
-
-        val clean = cleanResponse(finalResponse)
-        GenerationResult(
-            text = clean,
-            totalDurationNs = 0,
-            evalCount = estimateTokens(clean)
-        ).also {
-            _totalTokensGenerated.addAndGet(it.evalCount.toLong())
-        }
-    }
+    fun listSessions(): Set<String> = sessionManager.listSessions()
 
     suspend fun chat(
         messages: List<ChatMessage>,
         sessionId: String? = null,
         options: ModelOptions? = null
     ): GenerationResult = withContext(Dispatchers.IO) {
-        resetInactivityTimer()
+        sessionManager.resetInactivityTimer()
         val sid = sessionId ?: "temp_chat_${System.currentTimeMillis()}"
-        val prompt = buildGemmaChatPrompt(messages)
+        val prompt = PromptFormatter.buildGemmaChatPrompt(messages) { base64 ->
+            decodeImageSafely(base64)
+        }
         checkContextLimit(prompt, options?.numCtx)
         logPrompt("chat", prompt)
 
@@ -424,6 +360,44 @@ class LlmEngine(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Generación Síncrona
+    // ─────────────────────────────────────────────────────────────────────────
+
+    suspend fun generate(
+        prompt: String,
+        system: String? = null,
+        options: ModelOptions? = null
+    ): GenerationResult = withContext(Dispatchers.IO) {
+        sessionManager.resetInactivityTimer()
+        val sid = "temp_gen_${System.currentTimeMillis()}"
+        val formattedPrompt = PromptFormatter.buildGemmaPrompt(system ?: DEFAULT_SYSTEM_PROMPT, prompt)
+        val contents = Contents.of(Content.Text(formattedPrompt))
+        checkContextLimit(contents, options?.numCtx)
+        logPrompt("generate", formattedPrompt)
+
+        var finalResponse = ""
+        try {
+            val conv = getOrCreateConversation(sid, options)
+            conv.sendMessageAsync(formattedPrompt).collect { result ->
+                Log.v("LlmEngine", "Delta: ${result.text}")
+                finalResponse += result.text
+            }
+        } finally {
+            clearSession(sid)
+        }
+
+        val clean = cleanResponse(finalResponse)
+        GenerationResult(
+            text = clean,
+            totalDurationNs = 0,
+            evalCount = estimateTokens(clean)
+        ).also {
+            _totalTokensGenerated.addAndGet(it.evalCount.toLong())
+        }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Streaming con Delta real
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -432,9 +406,11 @@ class LlmEngine(
         sessionId: String? = null,
         options: ModelOptions? = null
     ): Flow<StreamToken> = callbackFlow {
-        resetInactivityTimer()
+        sessionManager.resetInactivityTimer()
         val sid = sessionId ?: "temp_stream_${System.currentTimeMillis()}"
-        val prompt = buildGemmaChatPrompt(messages)
+        val prompt = PromptFormatter.buildGemmaChatPrompt(messages) { base64 ->
+            decodeImageSafely(base64)
+        }
 
         try {
             checkContextLimit(prompt, options?.numCtx)
@@ -463,8 +439,9 @@ class LlmEngine(
             
             val endTime = System.currentTimeMillis()
             val durationSec = (endTime - firstTokenTime) / 1000.0
-            if (durationSec > 0 && tokenCount > 0) {
-                lastTokensPerSecond = tokenCount / durationSec
+            if (durationSec > 0.001 && tokenCount > 0) {
+                val calculatedTps = tokenCount / durationSec
+                lastTokensPerSecond = if (calculatedTps.isFinite()) calculatedTps else 0.0
             }
 
         } catch (e: TokenLimitExceededException) {
@@ -485,67 +462,16 @@ class LlmEngine(
     }.flowOn(Dispatchers.IO)
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Formateo de Prompts (Gemma 2 IT)
+    // Utilidades
     // ─────────────────────────────────────────────────────────────────────────
 
-    private fun buildGemmaPrompt(userText: String, systemText: String): String = buildString {
-        append("<start_of_turn>user\n")
-        append("$systemText\n\n${userText.trim()}")
-        append("<end_of_turn>\n")
-        append("<start_of_turn>model\n")
-    }
+    private fun cleanResponse(text: String): String = text
+        .replace(Regex("<start_of_turn>(user|model)\n?"), "")
+        .replace("<end_of_turn>", "")
+        .replace(Regex("^(user|model)\n"), "")
+        .trim()
 
-    private fun buildGemmaChatPrompt(messages: List<ChatMessage>): Contents {
-        val promptText = buildString {
-            val systemMsg = messages
-                .firstOrNull { it.role.lowercase() == "system" }
-                ?.content
-                ?.trim()
-                ?: DEFAULT_SYSTEM_PROMPT
-
-            val chatTurns = messages.filter { it.role.lowercase() != "system" }
-
-            chatTurns.forEachIndexed { index, msg ->
-                val role = msg.role.lowercase()
-                val gemmaRole = when (role) {
-                    "assistant", "model" -> "model"
-                    else -> "user"
-                }
-
-                append("<start_of_turn>$gemmaRole\n")
-                if (index == 0 && gemmaRole == "user") {
-                    append("$systemMsg\n\n${msg.content.trim()}")
-                } else {
-                    append(msg.content.trim())
-                }
-                append("<end_of_turn>\n")
-            }
-            append("<start_of_turn>model\n")
-        }
-
-        val textContent = Content.Text(promptText)
-
-        // Procesar imágenes del último mensaje de usuario
-        val lastUserMessage = messages.lastOrNull { it.role.lowercase() == "user" }
-        val images = lastUserMessage?.images
-            ?.takeIf { it.isNotEmpty() }
-            ?.mapNotNull { base64 -> decodeImageSafely(base64) }
-            ?: emptyList()
-
-        if (images.isEmpty()) {
-            return Contents.of(textContent)
-        }
-
-        // LiteRT-LM: imágenes primero, texto después
-        return try {
-            Contents.of(*images.toTypedArray(), textContent)
-        } catch (e: Throwable) {
-            Log.w(TAG, "Modelo no soporta imágenes, enviando solo texto: ${e.message}")
-            Contents.of(textContent)
-        }
-    }
-
-    private fun decodeImageSafely(base64: String): Content.ImageBytes? {
+    fun decodeImageSafely(base64: String): Content.ImageBytes? {
         return try {
             val bytes = Base64.decode(base64, Base64.DEFAULT)
             if (bytes.isEmpty()) {
@@ -610,36 +536,12 @@ class LlmEngine(
         return sampleSize
     }
 
-    private fun cleanResponse(text: String): String = text
-        .replace(Regex("<start_of_turn>(user|model)\n?"), "")
-        .replace("<end_of_turn>", "")
-        .replace(Regex("^(user|model)\n"), "")
-        .trim()
-
     // ─────────────────────────────────────────────────────────────────────────
     // Utilidades
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Función privada para resetear el timer:
-    private fun resetInactivityTimer() {
-        if (inactivityTimeoutMs <= 0) return
-        lastActivityTime = System.currentTimeMillis()
-
-        inactivityJob?.cancel()
-        inactivityJob = engineScope.launch {
-            delay(inactivityTimeoutMs)
-
-            val idleMs = System.currentTimeMillis() - lastActivityTime
-            if (idleMs >= inactivityTimeoutMs) {
-                Log.i(TAG, "Motor inactivo por ${inactivityTimeoutMs/1000}s — descargando modelo...")
-                unload()
-            }
-        }
-    }
-
     // Función pública para consultar el estado:
-    fun getIdleTimeMs(): Long = if (lastActivityTime == 0L) 0L
-    else System.currentTimeMillis() - lastActivityTime
+    fun getIdleTimeMs(): Long = sessionManager.getIdleTimeMs()
 
     fun isIdle(): Boolean = !isInitialized
 
@@ -658,8 +560,12 @@ class LlmEngine(
     /**
      * Verifica si el prompt cabe en el contexto actual dejando margen para la respuesta.
      */
-    private fun checkContextLimit(prompt: Contents, requestedLimit: Int? = null) {
-        val text = prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+    private fun checkContextLimit(prompt: Any, requestedLimit: Int? = null) {
+        val text = when (prompt) {
+            is Contents -> prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+            is String -> prompt
+            else -> prompt.toString()
+        }
         val estimated = estimateTokens(text)
         val limit = requestedLimit ?: currentCtx
 
@@ -685,7 +591,9 @@ class LlmEngine(
 
         while (currentList.isNotEmpty()) {
             val testMessages = if (systemMsg != null) listOf(systemMsg) + currentList else currentList
-            val prompt = buildGemmaChatPrompt(testMessages)
+            val prompt = PromptFormatter.buildGemmaChatPrompt(testMessages) { base64 ->
+                decodeImageSafely(base64)
+            }
             val text = prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
             if (estimateTokens(text) <= targetTokens) break
 

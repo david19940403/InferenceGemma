@@ -21,8 +21,8 @@ data class GenerateRequest(
     val stream: Boolean? = null,        // default true en Ollama
     val raw: Boolean? = null,
     val format: JsonElement? = null,    // "json" o JSON Schema object
-    val images: List<String>? = null,
     val options: ModelOptions? = null,
+    @SerialName("images") val images: List<String>? = null,
     @Serializable(with = DurationToSecondsSerializer::class)
     @SerialName("keep_alive") val keepAlive: Long? = null
 )

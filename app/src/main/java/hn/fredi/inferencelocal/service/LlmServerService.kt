@@ -229,7 +229,9 @@ class LlmServerService : Service(), ComponentCallbacks2 {
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW,
             ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> {
                 Log.i(TAG, "Presión de memoria detectada ($level). Limpiando sesiones inactivas...")
-                engine?.clearSession() // Limpiar solo sesiones
+                serviceScope.launch {
+                    engine?.clearSession() // Limpiar solo sesiones
+                }
             }
         }
     }

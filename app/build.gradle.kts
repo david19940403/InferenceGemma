@@ -13,8 +13,8 @@ android {
         applicationId = "hn.fredi.inferencelocal"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -109,7 +109,7 @@ dependencies {
 
     // ── Logback (requerido por Ktor para logging) ─────────────
     implementation(libs.logback.android)
-
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
