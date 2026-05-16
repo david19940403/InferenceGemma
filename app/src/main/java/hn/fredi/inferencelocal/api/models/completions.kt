@@ -1,7 +1,16 @@
 package hn.fredi.inferencelocal.api.models
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 
 
 @Serializable
@@ -73,6 +82,28 @@ data class OaiChatRequest(
     val tools: List<Tool>? = null
 )
 
+
+@Serializable
+data class OaiChatMessage(
+    val role: String,
+    val content: OaiContent? = null
+)
+@Serializable
+data class OaiContentPart(
+    val type: String,
+    val text: String? = null,
+    @SerialName("image_url") val imageUrl: OaiImageUrl? = null
+)
+
+@Serializable
+data class OaiImageUrl(val url: String)
+
+@Serializable(with = OaiContentSerializer::class)
+sealed class OaiContent {
+    data class Text(val value: String) : OaiContent()
+    data class Parts(val parts: List<OaiContentPart>) : OaiContent()
+}
+
 @Serializable
 data class OaiMessage(
     val role: String,
@@ -96,3 +127,26 @@ data class OaiChoice(
     val message: OaiMessage,
     @SerialName("finish_reason") val finishReason: String?
 )
+
+object OaiContentSerializer : KSerializer<OaiContent> {
+    override val descriptor = buildClassSerialDescriptor("OaiContent")
+
+    override fun deserialize(decoder: Decoder): OaiContent {
+        val jsonDecoder = decoder as JsonDecoder
+        val element = jsonDecoder.decodeJsonElement()
+        return when {
+            element is JsonPrimitive -> OaiContent.Text(element.content)
+            element is JsonArray -> OaiContent.Parts(
+                Json.decodeFromJsonElement(element)
+            )
+            else -> OaiContent.Text("")
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: OaiContent) {
+        when (value) {
+            is OaiContent.Text -> encoder.encodeString(value.value)
+            is OaiContent.Parts -> { /* no needed */ }
+        }
+    }
+}

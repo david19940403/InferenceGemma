@@ -1,11 +1,13 @@
 package hn.fredi.inferencelocal.service
 
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.IBinder
@@ -51,22 +53,22 @@ sealed class ServerState {
 // LlmServerService — Foreground Service
 // ─────────────────────────────────────────────────────────────────────────────
 
-class LlmServerService : Service() {
+class LlmServerService : Service(), ComponentCallbacks2 {
 
     companion object {
         private const val TAG = "LlmServerService"
 
         // Acciones
-        const val ACTION_START       = "hn.kwikstop.inferencelocal.ACTION_START"
-        const val ACTION_STOP        = "hn.kwikstop.inferencelocal.ACTION_STOP"
-        const val ACTION_QUERY_STATE = "hn.kwikstop.inferencelocal.ACTION_QUERY_STATE"
+        const val ACTION_START       = "hn.fredi.inferencelocal.ACTION_START"
+        const val ACTION_STOP        = "hn.fredi.inferencelocal.ACTION_STOP"
+        const val ACTION_QUERY_STATE = "hn.fredi.inferencelocal.ACTION_QUERY_STATE"
 
         // Extras de inicio
         const val EXTRA_MODEL_NAME = "extra_model_name"
         const val EXTRA_PORT       = "extra_port"
 
         // Broadcast hacia la UI
-        const val BROADCAST_STATE   = "hn.kwikstop.inferencelocal.STATE"
+        const val BROADCAST_STATE   = "hn.fredi.inferencelocal.STATE"
         const val EXTRA_STATE_CODE  = "state_code"
         const val EXTRA_STATE_MSG   = "state_msg"
         const val EXTRA_STATE_PORT  = "state_port"
@@ -75,11 +77,21 @@ class LlmServerService : Service() {
         const val EXTRA_STATE_SESSIONS = "state_sessions"
         const val EXTRA_STATE_TOKENS   = "state_tokens"
         const val EXTRA_STATE_MAX_TOKENS = "state_max_tokens"
+        const val EXTRA_STATE_BACKEND = "state_backend"
+        const val EXTRA_STATE_TPS = "state_tps"
+        const val EXTRA_STATE_TTFT = "state_ttft"
+        const val EXTRA_STATE_INIT_TIME = "state_init_time"
+        const val EXTRA_STATE_RAM = "state_ram"
+        const val EXTRA_STATE_MIN_RAM = "state_min_ram"
 
         const val EXTRA_DEFAULT_NUM_CTX = "default_num_ctx"
         const val EXTRA_DEFAULT_TEMP    = "default_temp"
         const val EXTRA_DEFAULT_TOP_K   = "default_top_k"
         const val EXTRA_DEFAULT_TOP_P   = "default_top_p"
+
+        const val EXTRA_PREFERRED_BACKEND = "extra_preferred_backend"
+        const val EXTRA_MAX_SESSIONS      = "extra_max_sessions"
+        const val EXTRA_MIN_RAM_MB        = "extra_min_ram_mb"
 
         // Notificación
         private const val CHANNEL_ID      = "llm_server_channel"
@@ -99,7 +111,10 @@ class LlmServerService : Service() {
                         numCtx: Int = 2048,
                         temp: Float = 0.7f,
                         topK: Int = 40,
-                        topP: Float = 0.9f) =
+                        topP: Float = 0.9f,
+                        preferredBackend: String = "GPU",
+                        maxSessions: Int = 3,
+                        minRamMb: Int = 1536) =
             Intent(context, LlmServerService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_MODEL_NAME, modelName)
@@ -108,6 +123,9 @@ class LlmServerService : Service() {
                 putExtra(EXTRA_DEFAULT_TEMP, temp)
                 putExtra(EXTRA_DEFAULT_TOP_K, topK)
                 putExtra(EXTRA_DEFAULT_TOP_P, topP)
+                putExtra(EXTRA_PREFERRED_BACKEND, preferredBackend)
+                putExtra(EXTRA_MAX_SESSIONS, maxSessions)
+                putExtra(EXTRA_MIN_RAM_MB, minRamMb)
             }
 
         fun stopIntent(context: Context) =
@@ -138,9 +156,16 @@ class LlmServerService : Service() {
     private var defaultTemp: Float = 0.7f
     private var defaultTopK: Int = 40
     private var defaultTopP: Float = 0.9f
+    
+    private var preferredBackend: String = "GPU"
+    private var maxSessions: Int = 3
+    private var minRamMb: Int = 1536
 
     private var wakeLock : PowerManager.WakeLock? = null
     private var wifiLock : WifiManager.WifiLock?  = null
+    override fun onBind(p0: Intent?): IBinder? {
+        TODO("Not yet implemented")
+    }
 
     // ── Ciclo de vida ─────────────────────────────────────────────────────────
 
@@ -169,6 +194,10 @@ class LlmServerService : Service() {
                 defaultTemp    = intent.getFloatExtra(EXTRA_DEFAULT_TEMP, 0.7f)
                 defaultTopK   = intent.getIntExtra(EXTRA_DEFAULT_TOP_K, 40)
                 defaultTopP    = intent.getFloatExtra(EXTRA_DEFAULT_TOP_P, 0.9f)
+                
+                preferredBackend = intent.getStringExtra(EXTRA_PREFERRED_BACKEND) ?: "GPU"
+                maxSessions      = intent.getIntExtra(EXTRA_MAX_SESSIONS, 3)
+                minRamMb         = intent.getIntExtra(EXTRA_MIN_RAM_MB, 1536)
 
                 startForeground(NOTIFICATION_ID, buildNotification("Iniciando…"))
                 acquireLocks()
@@ -186,7 +215,24 @@ class LlmServerService : Service() {
         return START_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        when (level) {
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL,
+            ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
+                Log.w(TAG, "Presión de memoria CRÍTICA detectada ($level). Liberando recursos...")
+                serviceScope.launch {
+                    engine?.unload() // Liberación total si el sistema está al límite
+                    broadcastCurrentState(message = "Memoria crítica: Modelo descargado para evitar cierre")
+                }
+            }
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW,
+            ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> {
+                Log.i(TAG, "Presión de memoria detectada ($level). Limpiando sesiones inactivas...")
+                engine?.clearSession() // Limpiar solo sesiones
+            }
+        }
+    }
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
@@ -224,6 +270,10 @@ class LlmServerService : Service() {
                 defaultTemperature = defaultTemp
                 defaultTopK = defaultTopK
                 defaultTopP = defaultTopP
+                defaultNumCtx = defaultNumCtx
+                this.preferredBackend = this@LlmServerService.preferredBackend
+                this.maxSessions = this@LlmServerService.maxSessions
+                this.minAvailableRamMb = this@LlmServerService.minRamMb.toLong()
             }
             // Ya no cargamos aquí, se cargará por demanda en el router
             Log.i(TAG, "Motor LlmEngine inicializado (esperando carga bajo demanda)")
@@ -271,16 +321,35 @@ class LlmServerService : Service() {
                 val sessions = engine?.activeSessions ?: 0
                 val tokens   = engine?.totalTokensGenerated ?: 0L
                 val maxTokens = engine?.maxTokens ?: 2048
+                val backend = engine?.getActiveBackend() ?: "Unknown"
+                val tps = engine?.lastTokensPerSecond ?: 0.0
+                val ttft = engine?.lastTimeToFirstTokenMs ?: 0L
+                val initTime = engine?.lastInitTimeMs ?: 0L
+                val ram = getMemoryUsage()
 
                 // Actualizar notificación con métricas actuales
-                updateNotification(buildMetricsText(sessions, tokens))
+                updateNotification(buildMetricsText(sessions, tokens, backend, tps))
 
                 // También emitir broadcast para que la UI se actualice
-                broadcastCurrentState(sessions, tokens, maxTokens)
+                broadcastCurrentState(sessions, tokens, maxTokens, backend, tps, ttft, initTime, ram)
 
                 delay(METRICS_REFRESH_MS)
             }
         }
+    }
+
+    private fun getMemoryUsage(): String {
+        val mi = ActivityManager.MemoryInfo()
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        activityManager.getMemoryInfo(mi)
+        
+        val avail = mi.availMem / 1024 / 1024
+        
+        val runtime = Runtime.getRuntime()
+        val usedJvm = (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024
+        
+        // Retornamos JVM usada y RAM de sistema disponible
+        return "${usedJvm}M | Libre: ${avail}M"
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -324,7 +393,7 @@ class LlmServerService : Service() {
         initJob = null
 
         runCatching {
-            server?.stop(gracePeriodMillis = 1_000, timeoutMillis = 3_000)
+            server?.stop(gracePeriodMillis = 0, timeoutMillis = 2_000)
         }.onFailure { Log.w(TAG, "Error al detener Ktor: ${it.message}") }
         server = null
 
@@ -370,7 +439,12 @@ class LlmServerService : Service() {
         sessions: Int    = engine?.activeSessions ?: 0,
         tokens  : Long   = engine?.totalTokensGenerated ?: 0L,
         maxTokens: Int   = engine?.maxTokens ?: 2048,
-        message : String = getDisplayMessage(sessions, tokens)
+        backend: String  = engine?.getActiveBackend() ?: "Unknown",
+        tps: Double      = engine?.lastTokensPerSecond ?: 0.0,
+        ttft: Long       = engine?.lastTimeToFirstTokenMs ?: 0L,
+        initTime: Long   = engine?.lastInitTimeMs ?: 0L,
+        ram: String      = "—",
+        message : String = getDisplayMessage(sessions, tokens, backend, tps)
     ) {
         val intent = Intent(BROADCAST_STATE).apply {
             setPackage(packageName)
@@ -381,13 +455,28 @@ class LlmServerService : Service() {
             putExtra(EXTRA_STATE_SESSIONS, sessions)
             putExtra(EXTRA_STATE_TOKENS,   tokens)
             putExtra(EXTRA_STATE_MAX_TOKENS, maxTokens)
+            putExtra(EXTRA_STATE_BACKEND,  backend)
+            putExtra(EXTRA_STATE_TPS,      tps)
+            putExtra(EXTRA_STATE_TTFT,     ttft)
+            putExtra(EXTRA_STATE_INIT_TIME, initTime)
+            putExtra(EXTRA_STATE_RAM,      ram)
+
+            // Incluir parámetros de configuración actuales
+            putExtra(EXTRA_DEFAULT_TEMP, defaultTemp)
+            putExtra(EXTRA_DEFAULT_TOP_K, defaultTopK)
+            putExtra(EXTRA_DEFAULT_TOP_P, defaultTopP)
+            putExtra(EXTRA_DEFAULT_NUM_CTX, defaultNumCtx)
+            putExtra(EXTRA_PREFERRED_BACKEND, preferredBackend)
+            putExtra(EXTRA_MAX_SESSIONS, maxSessions)
+            putExtra(EXTRA_MIN_RAM_MB, minRamMb)
+
             if (lastErrorMessage != null) putExtra(EXTRA_STATE_ERROR, lastErrorMessage)
         }
         sendBroadcast(intent)
     }
 
-    private fun getDisplayMessage(sessions: Int = 0, tokens: Long = 0L): String = when (currentPhase) {
-        "RUNNING"        -> buildMetricsText(sessions, tokens)
+    private fun getDisplayMessage(sessions: Int = 0, tokens: Long = 0L, backend: String = "Unknown", tps: Double = 0.0): String = when (currentPhase) {
+        "RUNNING"        -> buildMetricsText(sessions, tokens, backend, tps)
         "LOADING_MODEL"  -> "Cargando modelo…"
         "STARTING_SERVER"-> "Iniciando servidor…"
         "STOPPING"       -> "Deteniendo servidor…"
@@ -399,18 +488,19 @@ class LlmServerService : Service() {
     // Notificación
     // ─────────────────────────────────────────────────────────────────────────
 
-    private fun buildMetricsText(sessions: Int, tokens: Long): String {
+    private fun buildMetricsText(sessions: Int, tokens: Long, backend: String = "Unknown", tps: Double = 0.0): String {
         val sessionsTxt = when (sessions) {
-            0    -> "sin sesiones activas"
-            1    -> "1 sesión activa"
-            else -> "$sessions sesiones activas"
+            0    -> "Idle"
+            1    -> "1 Worker"
+            else -> "$sessions Workers"
         }
         val tokensTxt = when {
-            tokens < 1_000L       -> "$tokens tokens"
-            tokens < 1_000_000L   -> "${"%.1f".format(tokens / 1_000.0)}k tokens"
-            else                  -> "${"%.1f".format(tokens / 1_000_000.0)}M tokens"
+            tokens < 1_000L       -> "$tokens t"
+            tokens < 1_000_000L   -> "${"%.1f".format(tokens / 1_000.0)}k t"
+            else                  -> "${"%.1f".format(tokens / 1_000_000.0)}M t"
         }
-        return "Puerto $currentPort · $sessionsTxt · $tokensTxt"
+        val speedTxt = if (tps > 0) " · ${"%.1f".format(tps)} t/s" else ""
+        return "[$backend] $sessionsTxt · $tokensTxt$speedTxt"
     }
 
     private fun createNotificationChannel() {

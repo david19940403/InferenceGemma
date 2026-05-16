@@ -1,44 +1,8 @@
 package hn.fredi.inferencelocal.api
 
+import android.R
 import hn.fredi.inferencelocal.api.engine.LlmEngine
-import hn.fredi.inferencelocal.api.models.ChatFinalResponse
-import hn.fredi.inferencelocal.api.models.ChatMessage
-import hn.fredi.inferencelocal.api.models.ChatRequest
-import hn.fredi.inferencelocal.api.models.ChatStreamChunk
-import hn.fredi.inferencelocal.api.models.ChatUnloadResponse
-import hn.fredi.inferencelocal.api.models.CopyRequest
-import hn.fredi.inferencelocal.api.models.CreateRequest
-import hn.fredi.inferencelocal.api.models.CreateStatusLine
-import hn.fredi.inferencelocal.api.models.DeleteRequest
-import hn.fredi.inferencelocal.api.models.EmbedRequest
-import hn.fredi.inferencelocal.api.models.EmbedResponse
-import hn.fredi.inferencelocal.api.models.GenerateFinalChunk
-import hn.fredi.inferencelocal.api.models.GenerateRequest
-import hn.fredi.inferencelocal.api.models.GenerateStreamChunk
-import hn.fredi.inferencelocal.api.models.LegacyEmbeddingsRequest
-import hn.fredi.inferencelocal.api.models.LegacyEmbeddingsResponse
-import hn.fredi.inferencelocal.api.models.ModelOptions
-import hn.fredi.inferencelocal.api.models.OaiChatRequest
-import hn.fredi.inferencelocal.api.models.OaiChatResponse
-import hn.fredi.inferencelocal.api.models.OaiChoice
-import hn.fredi.inferencelocal.api.models.OaiCompletionChoice
-import hn.fredi.inferencelocal.api.models.OaiCompletionRequest
-import hn.fredi.inferencelocal.api.models.OaiCompletionResponse
-import hn.fredi.inferencelocal.api.models.OaiDelta
-import hn.fredi.inferencelocal.api.models.OaiEmbeddingData
-import hn.fredi.inferencelocal.api.models.OaiEmbeddingRequest
-import hn.fredi.inferencelocal.api.models.OaiEmbeddingResponse
-import hn.fredi.inferencelocal.api.models.OaiMessage
-import hn.fredi.inferencelocal.api.models.OaiModelData
-import hn.fredi.inferencelocal.api.models.OaiModelsResponse
-import hn.fredi.inferencelocal.api.models.OaiStreamChoice
-import hn.fredi.inferencelocal.api.models.OaiStreamChunk
-import hn.fredi.inferencelocal.api.models.OaiUsage
-import hn.fredi.inferencelocal.api.models.OllamaError
-import hn.fredi.inferencelocal.api.models.OllamaMessage
-import hn.fredi.inferencelocal.api.models.PullRequest
-import hn.fredi.inferencelocal.api.models.PullStatusLine
-import hn.fredi.inferencelocal.api.models.ShowRequest
+import hn.fredi.inferencelocal.api.models.*
 import hn.fredi.inferencelocal.api.registry.ModelRegistry
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -49,7 +13,6 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
-import io.ktor.server.response.respond
 import io.ktor.server.routing.*
 import io.ktor.util.*
 import io.ktor.util.pipeline.*
@@ -77,7 +40,6 @@ private val apiJson = Json {
     isLenient         = true
     ignoreUnknownKeys = true
     encodeDefaults    = true
-    explicitNulls     = false   // no enviar campos null → menos ruido en clientes
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,10 +61,14 @@ fun Application.ollamaApiModule() {
     install(ContentNegotiation) { json(apiJson) }
 
     install(StatusPages) {
-        exception<IllegalArgumentException> { call, cause ->
+        exception<hn.fredi.inferencelocal.api.engine.TokenLimitExceededException> { call, cause ->
             call.respond(HttpStatusCode.BadRequest,
-                OllamaError("bad request: ${cause.message}")
+                OllamaError("Límite de tokens superado: ${cause.message}. Sugerencia: Comprime el chat o reduce el historial.")
             )
+        }
+
+        exception<IllegalArgumentException> { call, cause ->
+            call.respond(HttpStatusCode.BadRequest, OllamaError(cause.message ?: "invalid argument"))
         }
         exception<NotImplementedError> { call, cause ->
             call.respond(HttpStatusCode.NotImplemented,
@@ -120,7 +86,6 @@ fun Application.ollamaApiModule() {
 
         // ─── Health ──────────────────────────────────────────────────────────
         get("/") {
-            // Ollama real responde con el string "Ollama is running"
             call.respondText("Ollama is running", ContentType.Text.Plain)
         }
 
@@ -132,13 +97,6 @@ fun Application.ollamaApiModule() {
         // SECCIÓN 1 — INFERENCIA
         // ════════════════════════════════════════════════════════════════════
 
-        // ── POST /api/generate ───────────────────────────────────────────────
-        // Compatibilidad: Open WebUI, tg-bot-ollama, shell scripts, LangChain
-        //
-        // Ollama stream=true (default): NDJSON donde cada línea es un chunk con
-        //   { model, created_at, response: "<delta>", done: false }
-        // Ollama stream=false: objeto único con response completa + stats
-        // ────────────────────────────────────────────────────────────────────
         post("/api/generate") {
             val engine   = requireEngine() ?: return@post
             val registry = requireRegistry()
@@ -146,22 +104,18 @@ fun Application.ollamaApiModule() {
             val req = safeReceive<GenerateRequest>() ?: return@post
 
             if (req.prompt.isBlank()) {
-                call.respond(HttpStatusCode.BadRequest,
-                    OllamaError("'prompt' is required")
-                )
+                call.respond(HttpStatusCode.BadRequest, OllamaError("'prompt' is required"))
                 return@post
+            }
+            req.options?.keepAlive?.let { keepAliveSec ->
+                engine.inactivityTimeoutMs = if (keepAliveSec <= 0) 0L else keepAliveSec * 1000L
             }
             if (!registry.exists(req.model)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.model}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                 return@post
             }
 
-            // stream=true es el default de Ollama
             val wantStream = req.stream ?: true
-
-            // CARGA BAJO DEMANDA
             val modelPath = registry.filePath(req.model)
             if (modelPath != null) {
                 try {
@@ -182,16 +136,12 @@ fun Application.ollamaApiModule() {
                     var accumulated = ""
                     engine.chatStream(
                         messages = listOf(
-                            ChatMessage(
-                                role = "system",
-                                content = req.system ?: "You are a helpful assistant."
-                            ),
+                            ChatMessage(role = "system", content = req.system ?: "You are a helpful assistant."),
                             ChatMessage(role = "user", content = req.prompt)
                         ),
                         options = req.options
                     )
                         .catch { e ->
-                            // Error mid-stream: enviamos done=true con mensaje de error
                             val errChunk = GenerateStreamChunk(
                                 model = req.model,
                                 createdAt = isoNow(),
@@ -222,9 +172,9 @@ fun Application.ollamaApiModule() {
                                     doneReason = "stop",
                                     totalDuration = 0L,
                                     loadDuration = 0L,
-                                    promptEvalCount = estimateTokens(req.prompt),
+                                    promptEvalCount = engine.estimateTokens(req.prompt),
                                     promptEvalDuration = 0L,
-                                    evalCount = estimateTokens(accumulated),
+                                    evalCount = engine.estimateTokens(accumulated),
                                     evalDuration = 0L
                                 )
                                 writeStringUtf8(apiJson.encodeToString(finalChunk) + "\n")
@@ -250,26 +200,16 @@ fun Application.ollamaApiModule() {
                         doneReason = "stop",
                         totalDuration = elapsed * 1_000_000L,
                         loadDuration = 0L,
-                        promptEvalCount = estimateTokens(req.prompt),
+                        promptEvalCount = engine.estimateTokens(req.prompt),
                         promptEvalDuration = 0L,
                         evalCount = result.evalCount,
-                        evalDuration = result.totalDurationNs
+                        evalDuration = 0L,
+                        context = arrayListOf(0)
                     )
                 )
             }
         }
 
-        // ── POST /api/chat ────────────────────────────────────────────────────
-        // Compatibilidad: Open WebUI, Chatbot UI, Msty, Hollama, Continue.dev
-        //
-        // Caso especial de Ollama: messages=[] con keep_alive=0 → descargar modelo
-        //
-        // Stream chunks:
-        //   { model, created_at, message: {role:"assistant", content:"<delta>"}, done:false }
-        // Final chunk:
-        //   { ..., message: {role:"assistant", content:""}, done:true, done_reason:"stop",
-        //     total_duration, load_duration, prompt_eval_count, eval_count, ... }
-        // ─────────────────────────────────────────────────────────────────────
         post("/api/chat") {
             val engine   = requireEngine() ?: return@post
             val registry = requireRegistry()
@@ -280,8 +220,9 @@ fun Application.ollamaApiModule() {
                 call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                 return@post
             }
-
-            // CARGA BAJO DEMANDA
+            req.options?.keepAlive?.let { keepAliveSec ->
+                engine.inactivityTimeoutMs = if (keepAliveSec <= 0) 0L else keepAliveSec * 1000L
+            }
             val modelPath = registry.filePath(req.model)
             if (modelPath != null) {
                 try {
@@ -296,7 +237,6 @@ fun Application.ollamaApiModule() {
                 return@post
             }
 
-            // Caso especial: vaciar modelo de memoria
             if (req.messages.isEmpty()) {
                 val reason = if ((req.keepAlive ?: 1) <= 0) "unload" else "load"
                 if (reason == "unload") engine.unload()
@@ -312,12 +252,7 @@ fun Application.ollamaApiModule() {
                 return@post
             }
 
-            if (!registry.exists(req.model)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.model}' not found")
-                )
-                return@post
-            }
+
 
             val wantStream = req.stream ?: true
             val startMs    = System.currentTimeMillis()
@@ -326,9 +261,9 @@ fun Application.ollamaApiModule() {
                 streamHeaders()
                 call.respondBytesWriter(status = HttpStatusCode.OK) {
                     var tokensEmitted = 0
-                    var fullText      = StringBuilder()
+                    val fullText      = StringBuilder()
 
-                    engine.chatStream(messages = req.messages)
+                    engine.chatStream(messages = req.messages, options = req.options)
                         .catch { e ->
                             val errChunk = buildChatChunk(
                                 model     = req.model,
@@ -357,7 +292,7 @@ fun Application.ollamaApiModule() {
                                     model              = req.model,
                                     doneReason         = "stop",
                                     totalDuration      = elapsed * 1_000_000L,
-                                    promptEvalCount    = req.messages.sumOf { estimateTokens(it.content) },
+                                    promptEvalCount    = req.messages.sumOf { engine.estimateTokens(it.content) },
                                     evalCount          = tokensEmitted
                                 )
                                 writeStringUtf8(apiJson.encodeToString(final) + "\n")
@@ -381,37 +316,30 @@ fun Application.ollamaApiModule() {
                         doneReason = "stop",
                         totalDuration = elapsed * 1_000_000L,
                         loadDuration = 0L,
-                        promptEvalCount = req.messages.sumOf { estimateTokens(it.content) },
+                        promptEvalCount = req.messages.sumOf { engine.estimateTokens(it.content) },
                         promptEvalDuration = 0L,
                         evalCount = result.evalCount,
-                        evalDuration = result.totalDurationNs
+                        evalDuration = 0L
                     )
                 )
             }
         }
 
-        // ── POST /api/embed  (Ollama ≥ 0.1.25, reemplaza /api/embeddings) ────
-        // Soporta batch: input puede ser string o array de strings
-        // ─────────────────────────────────────────────────────────────────────
         post("/api/embed") {
             val engine   = requireEngine() ?: return@post
             val registry = requireRegistry()
             val req      = safeReceive<EmbedRequest>() ?: return@post
 
             if (!registry.exists(req.model)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.model}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                 return@post
             }
 
             val texts = when {
-                req.input != null      -> listOf(req.input)
-                req.prompt != null     -> listOf(req.prompt)   // legacy
+                req.input != null      -> listOf(req.input!!)
+                req.prompt != null     -> listOf(req.prompt!!)
                 else -> {
-                    call.respond(HttpStatusCode.BadRequest,
-                        OllamaError("'input' is required")
-                    )
+                    call.respond(HttpStatusCode.BadRequest, OllamaError("'input' is required"))
                     return@post
                 }
             }
@@ -426,69 +354,53 @@ fun Application.ollamaApiModule() {
             )
         }
 
-        // ── POST /api/embeddings  (endpoint legacy, mantenemos compatibilidad) ─
         post("/api/embeddings") {
             val engine   = requireEngine() ?: return@post
             val registry = requireRegistry()
             val req      = safeReceive<LegacyEmbeddingsRequest>() ?: return@post
 
             if (req.prompt.isNullOrBlank()) {
-                call.respond(HttpStatusCode.BadRequest,
-                    OllamaError("'prompt' is required")
-                )
+                call.respond(HttpStatusCode.BadRequest, OllamaError("'prompt' is required"))
                 return@post
             }
             if (!registry.exists(req.model)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.model}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                 return@post
             }
 
-            val embedding = engine.embed(req.prompt)
-            call.respond(HttpStatusCode.OK,
-                LegacyEmbeddingsResponse(embedding = embedding)
-            )
+            val embedding = engine.embed(req.prompt!!)
+            call.respond(HttpStatusCode.OK, LegacyEmbeddingsResponse(embedding = embedding))
         }
 
         // ════════════════════════════════════════════════════════════════════
         // SECCIÓN 2 — GESTIÓN DE MODELOS
         // ════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/tags ─────────────────────────────────────────────────────
         get("/api/tags") {
             call.respond(HttpStatusCode.OK, requireRegistry().listModels())
         }
 
-        // ── POST /api/show ────────────────────────────────────────────────────
-        // Devuelve Modelfile, parámetros, template, info del modelo
         post("/api/show") {
             val registry = requireRegistry()
             val req      = safeReceive<ShowRequest>() ?: return@post
 
             val details = registry.showModel(req.name)
             if (details == null) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.name}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.name}' not found"))
                 return@post
             }
             call.respond(HttpStatusCode.OK, details)
         }
 
-        // ── POST /api/create ──────────────────────────────────────────────────
         post("/api/create") {
             val registry = requireRegistry()
             val req      = safeReceive<CreateRequest>() ?: return@post
 
             if (req.name.isBlank()) {
-                call.respond(HttpStatusCode.BadRequest,
-                    OllamaError("'name' is required")
-                )
+                call.respond(HttpStatusCode.BadRequest, OllamaError("'name' is required"))
                 return@post
             }
 
-            // Ollama retorna un stream NDJSON de progreso al crear
             streamHeaders()
             call.respondBytesWriter(status = HttpStatusCode.OK) {
                 val result = registry.createModel(req.name, req.modelfile)
@@ -498,39 +410,28 @@ fun Application.ollamaApiModule() {
             }
         }
 
-        // ── POST /api/copy ────────────────────────────────────────────────────
         post("/api/copy") {
             val registry = requireRegistry()
             val req      = safeReceive<CopyRequest>() ?: return@post
 
             if (!registry.copyModel(req.source, req.destination)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("source model '${req.source}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("source model '${req.source}' not found"))
                 return@post
             }
-            // Ollama devuelve 200 sin body en este endpoint
             call.respond(HttpStatusCode.OK, emptyMap<String, String>())
         }
 
-        // ── DELETE /api/delete ────────────────────────────────────────────────
         delete("/api/delete") {
             val registry = requireRegistry()
             val req      = safeReceive<DeleteRequest>() ?: return@delete
 
             if (!registry.deleteModel(req.name)) {
-                call.respond(HttpStatusCode.NotFound,
-                    OllamaError("model '${req.name}' not found")
-                )
+                call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.name}' not found"))
                 return@delete
             }
             call.respond(HttpStatusCode.OK, emptyMap<String, String>())
         }
 
-        // ── POST /api/pull ────────────────────────────────────────────────────
-        // Ollama retorna un stream NDJSON con { status, digest?, total?, completed? }
-        // En Android no podemos descargar modelos de múltiples GB directamente,
-        // informamos al usuario.
         post("/api/pull") {
             val req      = safeReceive<PullRequest>() ?: return@post
             val registry = requireRegistry()
@@ -556,27 +457,19 @@ fun Application.ollamaApiModule() {
             }
         }
 
-        // ── POST /api/push ────────────────────────────────────────────────────
         post("/api/push") {
             streamHeaders()
             call.respondBytesWriter(status = HttpStatusCode.OK) {
-                val line = PullStatusLine(
-                    status = "Push is not supported from Android."
-                )
+                val line = PullStatusLine(status = "Push is not supported from Android.")
                 writeStringUtf8(apiJson.encodeToString(line) + "\n")
                 flush()
             }
         }
 
-        // ── POST /api/blobs/:digest ───────────────────────────────────────────
-        // Stub: necesario para /api/create con archivos remotos
         post("/api/blobs/{digest}") {
-            call.respond(HttpStatusCode.NotImplemented,
-                OllamaError("blob upload not supported on Android")
-            )
+            call.respond(HttpStatusCode.NotImplemented, OllamaError("blob upload not supported on Android"))
         }
 
-        // ── HEAD /api/blobs/:digest ───────────────────────────────────────────
         head("/api/blobs/{digest}") {
             call.respond(HttpStatusCode.NotFound)
         }
@@ -585,51 +478,40 @@ fun Application.ollamaApiModule() {
         // SECCIÓN 3 — ESTADO DEL SISTEMA
         // ════════════════════════════════════════════════════════════════════
 
-        // ── GET /api/ps ───────────────────────────────────────────────────────
-        // Lista modelos activos en memoria (running models)
         get("/api/ps") {
             call.respond(HttpStatusCode.OK, requireRegistry().listRunningModels())
         }
 
-        // ── GET /api/version ──────────────────────────────────────────────────
         get("/api/version") {
             call.respond(HttpStatusCode.OK, requireRegistry().version())
         }
 
         // ════════════════════════════════════════════════════════════════════
         // SECCIÓN 4 — COMPATIBILIDAD OPENAI  /v1/...
-        // Necesario para: Continue.dev, Cursor, LM Studio clients, Aider, etc.
         // ════════════════════════════════════════════════════════════════════
 
         route("/v1") {
 
-            // ── POST /v1/chat/completions ─────────────────────────────────────
-            // stream=true: SSE con chunks `data: {...}\n\n`
-            // stream=false: objeto único estilo ChatCompletion
             post("/chat/completions") {
                 val engine   = requireEngine() ?: return@post
                 val registry = requireRegistry()
                 val req      = safeReceive<OaiChatRequest>() ?: return@post
 
                 if (req.messages.isEmpty()) {
-                    call.respond(HttpStatusCode.BadRequest,
-                        OllamaError("'messages' cannot be empty")
-                    )
+                    call.respond(HttpStatusCode.BadRequest, OllamaError("'messages' cannot be empty"))
                     return@post
                 }
                 if (!registry.exists(req.model)) {
-                    call.respond(HttpStatusCode.NotFound,
-                        OllamaError("model '${req.model}' not found")
-                    )
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                     return@post
                 }
 
-                // CARGA BAJO DEMANDA
                 val modelPath = registry.filePath(req.model)
                 val options = ModelOptions(
                     temperature = req.temperature,
                     topP = req.topP,
                     numPredict = req.maxTokens,
+                    numCtx = req.maxTokens?.let { it * 4 } ?: 4096, // Fallback si no viene num_ctx
                     stop = req.stop
                 )
 
@@ -654,7 +536,6 @@ fun Application.ollamaApiModule() {
                 val created      = Instant.now().epochSecond
 
                 if (wantStream) {
-                    // SSE headers
                     call.response.header(HttpHeaders.ContentType, "text/event-stream")
                     call.response.header(HttpHeaders.CacheControl, "no-cache")
                     call.response.header(HttpHeaders.Connection, "keep-alive")
@@ -687,7 +568,6 @@ fun Application.ollamaApiModule() {
                                     flush()
                                 }
                                 if (token.isDone) {
-                                    // Chunk final con finish_reason
                                     val finalChunk = oaiStreamChunk(
                                         id      = completionId,
                                         created = created,
@@ -719,39 +599,34 @@ fun Application.ollamaApiModule() {
                                 )
                             ),
                             usage = OaiUsage(
-                                promptTokens = chatMessages.sumOf { estimateTokens(it.content) },
+                                promptTokens = chatMessages.sumOf { engine.estimateTokens(it.content) },
                                 completionTokens = result.evalCount,
-                                totalTokens = chatMessages.sumOf { estimateTokens(it.content) } + result.evalCount
+                                totalTokens = chatMessages.sumOf { engine.estimateTokens(it.content) } + result.evalCount
                             )
                         )
                     )
                 }
             }
 
-            // ── POST /v1/completions  (legacy completions endpoint) ───────────
             post("/completions") {
                 val engine   = requireEngine() ?: return@post
                 val registry = requireRegistry()
                 val req      = safeReceive<OaiCompletionRequest>() ?: return@post
 
                 if (req.prompt.isNullOrBlank()) {
-                    call.respond(HttpStatusCode.BadRequest,
-                        OllamaError("'prompt' is required")
-                    )
+                    call.respond(HttpStatusCode.BadRequest, OllamaError("'prompt' is required"))
                     return@post
                 }
                 if (!registry.exists(req.model)) {
-                    call.respond(HttpStatusCode.NotFound,
-                        OllamaError("model '${req.model}' not found")
-                    )
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                     return@post
                 }
 
-                // CARGA BAJO DEMANDA
                 val modelPath = registry.filePath(req.model)
                 val options = ModelOptions(
-                    temperature = req.temperature,
-                    numPredict = req.maxTokens
+                    temperature = req.temperature, 
+                    numPredict = req.maxTokens,
+                    numCtx = req.maxTokens?.let { it * 4 } ?: 4096
                 )
                 if (modelPath != null) {
                     try {
@@ -766,7 +641,7 @@ fun Application.ollamaApiModule() {
                     return@post
                 }
 
-                val result = engine.generate(prompt = req.prompt, options = options)
+                val result = engine.generate(prompt = req.prompt!!, options = options)
                 call.respond(HttpStatusCode.OK,
                     OaiCompletionResponse(
                         id = "cmpl-${UUID.randomUUID()}",
@@ -780,34 +655,28 @@ fun Application.ollamaApiModule() {
                             )
                         ),
                         usage = OaiUsage(
-                            promptTokens = estimateTokens(req.prompt),
+                            promptTokens = engine.estimateTokens(req.prompt!!),
                             completionTokens = result.evalCount,
-                            totalTokens = estimateTokens(req.prompt) + result.evalCount
+                            totalTokens = engine.estimateTokens(req.prompt!!) + result.evalCount
                         )
                     )
                 )
             }
 
-            // ── POST /v1/embeddings ───────────────────────────────────────────
             post("/embeddings") {
                 val engine   = requireEngine() ?: return@post
                 val registry = requireRegistry()
                 val req      = safeReceive<OaiEmbeddingRequest>() ?: return@post
 
                 if (req.input.isNullOrBlank()) {
-                    call.respond(HttpStatusCode.BadRequest,
-                        OllamaError("'input' is required")
-                    )
+                    call.respond(HttpStatusCode.BadRequest, OllamaError("'input' is required"))
                     return@post
                 }
                 if (!registry.exists(req.model)) {
-                    call.respond(HttpStatusCode.NotFound,
-                        OllamaError("model '${req.model}' not found")
-                    )
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model '${req.model}' not found"))
                     return@post
                 }
 
-                // CARGA BAJO DEMANDA
                 val modelPath = registry.filePath(req.model)
                 if (modelPath != null) {
                     try {
@@ -822,20 +691,19 @@ fun Application.ollamaApiModule() {
                     return@post
                 }
 
-                val embedding = engine.embed(req.input)
+                val embedding = engine.embed(req.input!!)
                 call.respond(HttpStatusCode.OK,
                     OaiEmbeddingResponse(
                         data = listOf(OaiEmbeddingData(index = 0, embedding = embedding)),
                         model = req.model,
                         usage = OaiUsage(
-                            promptTokens = estimateTokens(req.input),
-                            totalTokens = estimateTokens(req.input)
+                            promptTokens = engine.estimateTokens(req.input!!),
+                            totalTokens = engine.estimateTokens(req.input!!)
                         )
                     )
                 )
             }
 
-            // ── GET /v1/models ────────────────────────────────────────────────
             get("/models") {
                 val tags = requireRegistry().listModels()
                 call.respond(HttpStatusCode.OK,
@@ -851,15 +719,12 @@ fun Application.ollamaApiModule() {
                 )
             }
 
-            // ── GET /v1/models/:model ─────────────────────────────────────────
             get("/models/{model}") {
                 val name    = call.parameters["model"] ?: ""
                 val registry = requireRegistry()
 
                 if (!registry.exists(name)) {
-                    call.respond(HttpStatusCode.NotFound,
-                        OllamaError("model '$name' not found")
-                    )
+                    call.respond(HttpStatusCode.NotFound, OllamaError("model '$name' not found"))
                     return@get
                 }
 
@@ -879,24 +744,17 @@ fun Application.ollamaApiModule() {
 // Helpers privados
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Cabeceras estándar para NDJSON streaming (Ollama nativo).
- * Extension de PipelineContext para poder llamarse directamente
- * dentro de los handlers de routing sin necesidad de `call.`.
- */
 private fun PipelineContext<Unit, ApplicationCall>.streamHeaders() {
     call.response.header(HttpHeaders.ContentType, "application/x-ndjson")
     call.response.header(HttpHeaders.CacheControl, "no-cache")
     call.response.header(HttpHeaders.Connection, "keep-alive")
-    call.response.header("X-Accel-Buffering", "no")   // Desactiva buffer en Nginx
+    call.response.header("X-Accel-Buffering", "no")
 }
 
 private suspend fun PipelineContext<Unit, ApplicationCall>.requireEngine(): LlmEngine? {
     val engine = call.application.attributes.getOrNull(LlmEngineKey)
     if (engine == null) {
-        call.respond(HttpStatusCode.ServiceUnavailable,
-            OllamaError("engine not initialized")
-        )
+        call.respond(HttpStatusCode.ServiceUnavailable, OllamaError("engine not initialized"))
         return null
     }
     return engine
@@ -907,17 +765,12 @@ private fun PipelineContext<Unit, ApplicationCall>.requireRegistry(): ModelRegis
 
 private suspend inline fun <reified T : Any> PipelineContext<Unit, ApplicationCall>.safeReceive(): T? {
     return runCatching { call.receive<T>() }.getOrElse {
-        call.respond(HttpStatusCode.BadRequest,
-            OllamaError("invalid JSON: ${it.message}")
-        )
+        call.respond(HttpStatusCode.BadRequest, OllamaError("invalid JSON: ${it.message}"))
         null
     }
 }
 
 private fun isoNow(): String = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
-
-private fun estimateTokens(text: String): Int =
-    (text.split(Regex("\\s+")).size * 1.33).toInt().coerceAtLeast(1)
 
 // ─── Builders para chunks de stream ──────────────────────────────────────────
 

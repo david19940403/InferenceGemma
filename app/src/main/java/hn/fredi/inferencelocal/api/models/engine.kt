@@ -14,6 +14,8 @@ data class ChatMessage(
     val content: String,
     /** Imágenes en base64 para modelos multimodal (opcional) */
     val images: List<String>? = null,
+    /** Identificador del worker que procesa este mensaje */
+    val workerId: String? = null,
     /** Tool calls hechos por el asistente (opcional) */
     @SerialName("tool_calls")
     val toolCalls: List<ToolCall>? = null
@@ -39,6 +41,7 @@ data class ModelOptions(
     @SerialName("num_predict") val numPredict: Int? = null,
     @SerialName("num_ctx")   val numCtx: Int? = null,
     @SerialName("repeat_penalty") val repeatPenalty: Float? = null,
+    @SerialName("keep_alive")val keepAlive: Long? = null,
     val seed: Int? = null,
     val stop: List<String>? = null
 )

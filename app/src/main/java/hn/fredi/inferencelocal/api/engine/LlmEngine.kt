@@ -1,23 +1,34 @@
 package hn.fredi.inferencelocal.api.engine
 
+import android.app.ActivityManager
 import android.content.Context
+import android.graphics.BitmapFactory
+import android.util.Base64
 import android.util.Log
+import android.graphics.Bitmap
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
+import java.io.ByteArrayOutputStream
 import hn.fredi.inferencelocal.api.models.ChatMessage
 import hn.fredi.inferencelocal.api.models.ModelOptions
 import hn.fredi.inferencelocal.api.models.StreamToken
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -58,27 +69,80 @@ class LlmEngine(
     }
 
     private var engine: Engine? = null
-    // Mapa de conversaciones para soportar múltiples sesiones de chat con estado
-    private val conversations = mutableMapOf<String, Conversation>()
+    // Mapa de conversaciones con límite dinámico
+    var maxSessions: Int = 1
+
+    // Nuevas propiedades en la clase:
+    var inactivityTimeoutMs: Long = 5 * 60 * 1000L // 5 minutos por defecto (0 = desactivado)
+    private var lastActivityTime: Long = 0L
+    private var inactivityJob: Job? = null
+    private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+
+    private fun getAvailableRam(): Long {
+        val mi = ActivityManager.MemoryInfo()
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        activityManager.getMemoryInfo(mi)
+        return mi.availMem
+    }
+    
+    private val conversations = object : LinkedHashMap<String, Conversation>(10, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Conversation>?): Boolean {
+            if (size > maxSessions) { 
+                try {
+                    eldest?.value?.close()
+                    Log.i(TAG, "RAM Recovery: Cerrando sesión antigua '${eldest?.key}'")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error liberando sesión: ${e.message}")
+                }
+                return true
+            }
+            return false
+        }
+    }
     
     private var isInitialized = false
-    private var currentCtx = 2048
+    private var currentCtx = 4096
     val maxTokens: Int get() = currentCtx
+    private var activeBackendName: String = "Unknown"
+    var preferredBackend: String = "GPU" // Cambiado por defecto a GPU
 
     // Parametros por defecto configurables
     var defaultTemperature: Float = 0.7f
     var defaultTopK: Int = 40
     var defaultTopP: Float = 0.9f
+    var defaultNumCtx: Int = 4096
+    
+    // Control de memoria personalizable (MB)
+    var minAvailableRamMb: Long = 1536 
+
+    private var nativeRuntimeConfigured = false
 
     // Métricas globales
     private val _totalTokensGenerated = AtomicLong(0L)
     val totalTokensGenerated: Long get() = _totalTokensGenerated.get()
     val activeSessions: Int get() = conversations.size
 
+    // Métricas de rendimiento
+    var lastInitTimeMs: Long = 0
+    var lastTimeToFirstTokenMs: Long = 0
+    var lastTokensPerSecond: Double = 0.0
+
+    fun getActiveBackend(): String = activeBackendName
+
     // ─────────────────────────────────────────────────────────────────────────
     // Ciclo de vida del motor
     // ─────────────────────────────────────────────────────────────────────────
-
+    private fun isMultimodalModel(path: String): Boolean {
+        // Los modelos multimodales de LiteRT tienen "multimodal" o "vision" en el nombre
+        // o tienen extensión .litertlm con soporte de imagen
+        val name = java.io.File(path).name.lowercase()
+        return name.contains("vision") ||
+                name.contains("multimodal") ||
+                name.contains("4b") ||      // Gemma 4 es multimodal
+                name.contains("gemma3n") || // Gemma 3n es multimodal
+                name.contains("gemma-4")
+    }
     suspend fun load(path: String, options: ModelOptions? = null) = loadMutex.withLock {
         withContext(Dispatchers.IO) {
             val file = java.io.File(path)
@@ -86,52 +150,126 @@ class LlmEngine(
                 throw Exception("El archivo del modelo no existe en la ruta: $path")
             }
 
-            val requestedCtx = options?.numCtx ?: 2048
-            if (isInitialized && path == modelPath && requestedCtx == currentCtx) {
+            val requestedCtx = options?.numCtx ?: defaultNumCtx
+            val availableRam = getAvailableRam()
+            val ramThreshold = minAvailableRamMb * 1024L * 1024L
+            val lowRam = availableRam < ramThreshold
+
+            if (isInitialized && path == modelPath && requestedCtx == currentCtx && !lowRam) {
                 Log.d(TAG, "El modelo ya está cargado con el mismo contexto: $path")
                 return@withContext
             }
 
-            Log.i(TAG, "Iniciando carga de modelo: ${file.name} (Contexto: $requestedCtx)")
+            Log.i(TAG, "Iniciando carga de modelo: ${file.name} (RAM Libre: ${availableRam / 1024 / 1024}MB)")
             
             // Validación de formato GGUF (Incompatible con LiteRT-LM)
             if (isGguf(file)) {
                 throw Exception("El archivo ${file.name} está en formato GGUF. LiteRT-LM solo soporta modelos LiteRT (.tflite). Por favor descarga la versión 'LiteRT' desde Kaggle o HuggingFace.")
             }
 
-            modelPath = path
-            unloadInternal()
+            // Descarga forzada y limpieza si es un modelo nuevo o memoria baja
+            if (isInitialized || lowRam) {
+                Log.d(TAG, "Limpiando motor previo y forzando GC...")
+                unloadInternal()
+                System.gc()
+                System.runFinalization()
+                if (lowRam) delay(1000) // Pausa de seguridad para que el SO recupere memoria nativa
+            }
 
-            val backends = listOf(
-                "GPU" to { Backend.GPU() },
-                "CPU" to { Backend.CPU() }
-            )
+            modelPath = path
+
+            val nativeLibraryDir = context.applicationInfo.nativeLibraryDir
+            val isPixel = android.os.Build.MANUFACTURER.contains("Google", ignoreCase = true)
+            val isSamsung = android.os.Build.MANUFACTURER.contains("Samsung", ignoreCase = true)
+
+            // Estrategia de carga en cascada
+            val backends = mutableListOf<Pair<String, () -> Backend>>()
+            
+            val pref = preferredBackend.uppercase()
+            
+            // 1. Agregar el preferido primero
+            when (pref) {
+                "NPU" -> backends.add("NPU" to {
+                    configureNativeRuntime(nativeLibraryDir)
+                    Backend.NPU(nativeLibraryDir = nativeLibraryDir)
+                })
+                "GPU" -> backends.add("GPU" to { Backend.GPU() })
+                "CPU" -> backends.add("CPU" to { Backend.CPU() })
+            }
+
+            // 2. Agregar el resto como fallback si es "Auto" o para asegurar carga
+            if (pref == "AUTO" || pref == "NPU") {
+                if ((isSamsung || isPixel) && pref != "NPU") {
+                    backends.add("NPU" to {
+                        configureNativeRuntime(nativeLibraryDir)
+                        Backend.NPU(nativeLibraryDir = nativeLibraryDir)
+                    })
+                }
+                if (pref != "GPU") backends.add("GPU" to { Backend.GPU() })
+                if (pref != "CPU") backends.add("CPU" to { Backend.CPU() })
+            } else {
+                // Si eligió GPU o CPU explícitamente, igual ponemos los otros al final por si acaso
+                if (pref != "GPU") backends.add("GPU" to { Backend.GPU() })
+                if (pref != "CPU") backends.add("CPU" to { Backend.CPU() })
+                /*if ((isSamsung || isPixel) && pref != "NPU") {
+                    backends.add("NPU" to {
+                        configureNativeRuntime(nativeLibraryDir)
+                        Backend.NPU(nativeLibraryDir = nativeLibraryDir)
+                    })
+                }*/
+            }
 
             var lastError: Throwable? = null
+            val startTime = System.currentTimeMillis()
+            
             for ((name, factory) in backends) {
                 try {
                     Log.d(TAG, "Intentando inicializar con backend $name...")
-                    val backend = factory()
+                    
+                    // IMPORTANTE: Resetear variables antes de cada intento
+                    engine?.close()
+                    engine = null
+                    
+                    val backend = try {
+                        factory()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Fallo al crear factory para $name: ${e.message}")
+                        continue
+                    }
+                    val visionBackend: Backend? = if (isMultimodalModel(path)) {
+                        Backend.GPU()
+                    } else {
+                        null // Modelo texto-only, no inicializar visión
+                    }
+
                     val config = EngineConfig(
                         modelPath = path,
                         backend = backend,
-                        visionBackend = null,
-                        audioBackend = null,
-                        maxNumTokens = options?.numCtx ?: 2048,
-                        maxNumImages = null,
-                        cacheDir = context.cacheDir.path
+                        maxNumTokens = requestedCtx,
+                        maxNumImages = 1,
+                        cacheDir = context.cacheDir.path,
+                        visionBackend = visionBackend
                     )
                     
                     val newEngine = Engine(config)
                     newEngine.initialize()
+                    
+                    // Verificación de "salud" del modelo post-inicialización
                     engine = newEngine
                     isInitialized = true
                     currentCtx = requestedCtx
-                    Log.i(TAG, "Motor LiteRT-LM cargado exitosamente usando $name ✓")
+                    activeBackendName = name
+                    lastInitTimeMs = System.currentTimeMillis() - startTime
+                    
+                    Log.i(TAG, "¡Éxito! Motor LiteRT-LM cargado con $name en ${lastInitTimeMs}ms ✓")
                     return@withContext
                 } catch (e: Throwable) {
-                    Log.w(TAG, "Error con backend $name: ${e.message}")
+                    Log.e(TAG, "Error crítico con backend $name: ${e.message}")
                     lastError = e
+                    // Forzar recolección de basura nativa antes del siguiente intento
+                    System.gc()
+                    System.runFinalization()
+                    delay(500)
                 }
             }
             
@@ -153,12 +291,28 @@ class LlmEngine(
         }
     }
 
+    @Synchronized
+    private fun configureNativeRuntime(nativeLibraryDir: String) {
+        if (nativeRuntimeConfigured) return
+        try {
+            android.system.Os.setenv("LD_LIBRARY_PATH", nativeLibraryDir, true)
+            android.system.Os.setenv("ADSP_LIBRARY_PATH", nativeLibraryDir, true)
+            Log.i(TAG, "Set native library paths to $nativeLibraryDir")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set native library paths: ${e.message}")
+        }
+        nativeRuntimeConfigured = true
+    }
+
     suspend fun unload() = loadMutex.withLock {
         unloadInternal()
     }
 
     private fun unloadInternal() {
+        inactivityJob?.cancel()  // ← añadir
+        inactivityJob = null     // ← añadir
         try {
+            Log.d(TAG, "Descargando motor y sesiones...")
             conversations.values.forEach { it.close() }
             conversations.clear()
             engine?.close()
@@ -169,6 +323,8 @@ class LlmEngine(
             modelPath = null // Reset modelPath too
             isInitialized = false
             _totalTokensGenerated.set(0L)
+            System.gc()
+            System.runFinalization()
         }
     }
 
@@ -207,8 +363,11 @@ class LlmEngine(
         system: String? = null,
         options: ModelOptions? = null
     ): GenerationResult = withContext(Dispatchers.IO) {
+        resetInactivityTimer()
         val sid = "temp_gen_${System.currentTimeMillis()}"
         val formattedPrompt = buildGemmaPrompt(prompt, system ?: DEFAULT_SYSTEM_PROMPT)
+        val contents = Contents.of(Content.Text(formattedPrompt))
+        checkContextLimit(contents, options?.numCtx)
         logPrompt("generate", formattedPrompt)
 
         var finalResponse = ""
@@ -237,8 +396,10 @@ class LlmEngine(
         sessionId: String? = null,
         options: ModelOptions? = null
     ): GenerationResult = withContext(Dispatchers.IO) {
+        resetInactivityTimer()
         val sid = sessionId ?: "temp_chat_${System.currentTimeMillis()}"
         val prompt = buildGemmaChatPrompt(messages)
+        checkContextLimit(prompt, options?.numCtx)
         logPrompt("chat", prompt)
 
         var finalResponse = ""
@@ -271,16 +432,27 @@ class LlmEngine(
         sessionId: String? = null,
         options: ModelOptions? = null
     ): Flow<StreamToken> = callbackFlow {
+        resetInactivityTimer()
         val sid = sessionId ?: "temp_stream_${System.currentTimeMillis()}"
         val prompt = buildGemmaChatPrompt(messages)
-        logPrompt("stream", prompt)
 
         try {
+            checkContextLimit(prompt, options?.numCtx)
+            logPrompt("stream", prompt)
+
             val conv = getOrCreateConversation(sid, options)
             var tokenCount = 0
             val maxTokens = options?.numPredict ?: Int.MAX_VALUE
+            
+            val startTime = System.currentTimeMillis()
+            var firstTokenTime = 0L
 
             conv.sendMessageAsync(prompt).collect { result ->
+                if (firstTokenTime == 0L) {
+                    firstTokenTime = System.currentTimeMillis()
+                    lastTimeToFirstTokenMs = firstTokenTime - startTime
+                }
+                
                 val delta = result.text
                 if (delta.isNotEmpty() && tokenCount < maxTokens) {
                     tokenCount++
@@ -288,8 +460,23 @@ class LlmEngine(
                     trySend(StreamToken(text = delta, isDone = false))
                 }
             }
+            
+            val endTime = System.currentTimeMillis()
+            val durationSec = (endTime - firstTokenTime) / 1000.0
+            if (durationSec > 0 && tokenCount > 0) {
+                lastTokensPerSecond = tokenCount / durationSec
+            }
+
+        } catch (e: TokenLimitExceededException) {
+            trySend(StreamToken(
+                text = "\n\n⚠️ **Límite de tokens alcanzado**\n" +
+                        "${e.message}\n\n" +
+                        "Sugerencia: Puedes limpiar el chat o pedirme que 'comprima' la conversación para continuar.",
+                isDone = true
+            ))
         } catch (e: Exception) {
             Log.e(TAG, "Error en stream: ${e.message}")
+            trySend(StreamToken(text = "\n[Error: ${e.message}]", isDone = true))
         } finally {
             trySend(StreamToken(text = "", isDone = true))
             if (sessionId == null) clearSession(sid)
@@ -308,31 +495,119 @@ class LlmEngine(
         append("<start_of_turn>model\n")
     }
 
-    private fun buildGemmaChatPrompt(messages: List<ChatMessage>): String = buildString {
-        val systemMsg = messages
-            .firstOrNull { it.role.lowercase() == "system" }
-            ?.content
-            ?.trim()
-            ?: DEFAULT_SYSTEM_PROMPT
+    private fun buildGemmaChatPrompt(messages: List<ChatMessage>): Contents {
+        val promptText = buildString {
+            val systemMsg = messages
+                .firstOrNull { it.role.lowercase() == "system" }
+                ?.content
+                ?.trim()
+                ?: DEFAULT_SYSTEM_PROMPT
 
-        val chatTurns = messages.filter { it.role.lowercase() != "system" }
+            val chatTurns = messages.filter { it.role.lowercase() != "system" }
 
-        chatTurns.forEachIndexed { index, msg ->
-            val role = msg.role.lowercase()
-            val gemmaRole = when (role) {
-                "assistant", "model" -> "model"
-                else -> "user"
+            chatTurns.forEachIndexed { index, msg ->
+                val role = msg.role.lowercase()
+                val gemmaRole = when (role) {
+                    "assistant", "model" -> "model"
+                    else -> "user"
+                }
+
+                append("<start_of_turn>$gemmaRole\n")
+                if (index == 0 && gemmaRole == "user") {
+                    append("$systemMsg\n\n${msg.content.trim()}")
+                } else {
+                    append(msg.content.trim())
+                }
+                append("<end_of_turn>\n")
             }
-
-            append("<start_of_turn>$gemmaRole\n")
-            if (index == 0 && gemmaRole == "user") {
-                append("$systemMsg\n\n${msg.content.trim()}")
-            } else {
-                append(msg.content.trim())
-            }
-            append("<end_of_turn>\n")
+            append("<start_of_turn>model\n")
         }
-        append("<start_of_turn>model\n")
+
+        val textContent = Content.Text(promptText)
+
+        // Procesar imágenes del último mensaje de usuario
+        val lastUserMessage = messages.lastOrNull { it.role.lowercase() == "user" }
+        val images = lastUserMessage?.images
+            ?.takeIf { it.isNotEmpty() }
+            ?.mapNotNull { base64 -> decodeImageSafely(base64) }
+            ?: emptyList()
+
+        if (images.isEmpty()) {
+            return Contents.of(textContent)
+        }
+
+        // LiteRT-LM: imágenes primero, texto después
+        return try {
+            Contents.of(*images.toTypedArray(), textContent)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Modelo no soporta imágenes, enviando solo texto: ${e.message}")
+            Contents.of(textContent)
+        }
+    }
+
+    private fun decodeImageSafely(base64: String): Content.ImageBytes? {
+        return try {
+            val bytes = Base64.decode(base64, Base64.DEFAULT)
+            if (bytes.isEmpty()) {
+                Log.w(TAG, "Base64 decodificó array vacío")
+                return null
+            }
+
+            // Primero verificar dimensiones sin cargar el bitmap completo
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+
+            // Escalar si la imagen es muy grande (>1024px) para evitar OOM
+            val sampleSize = calculateSampleSize(options.outWidth, options.outHeight, 1024, 1024)
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565 // Menos memoria que ARGB_8888
+            }
+
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+            if (bitmap == null) {
+                Log.e(TAG, "BitmapFactory retornó null — formato no soportado")
+                return null
+            }
+
+            val imageBytes = ByteArrayOutputStream().use { stream ->
+                val compressed = bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                bitmap.recycle() // Liberar memoria nativa inmediatamente
+                if (!compressed) {
+                    Log.e(TAG, "bitmap.compress falló")
+                    return null
+                }
+                stream.toByteArray()
+            }
+
+            if (imageBytes.isEmpty()) {
+                Log.e(TAG, "Compresión produjo array vacío")
+                return null
+            }
+
+            Content.ImageBytes(imageBytes)
+
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "OOM al decodificar imagen — imagen demasiado grande")
+            null
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error inesperado al decodificar imagen: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun calculateSampleSize(
+        width: Int, height: Int,
+        maxWidth: Int, maxHeight: Int
+    ): Int {
+        var sampleSize = 1
+        if (width > maxWidth || height > maxHeight) {
+            val widthRatio = width / maxWidth
+            val heightRatio = height / maxHeight
+            sampleSize = maxOf(widthRatio, heightRatio).coerceAtLeast(1)
+        }
+        return sampleSize
     }
 
     private fun cleanResponse(text: String): String = text
@@ -345,6 +620,29 @@ class LlmEngine(
     // Utilidades
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Función privada para resetear el timer:
+    private fun resetInactivityTimer() {
+        if (inactivityTimeoutMs <= 0) return
+        lastActivityTime = System.currentTimeMillis()
+
+        inactivityJob?.cancel()
+        inactivityJob = engineScope.launch {
+            delay(inactivityTimeoutMs)
+
+            val idleMs = System.currentTimeMillis() - lastActivityTime
+            if (idleMs >= inactivityTimeoutMs) {
+                Log.i(TAG, "Motor inactivo por ${inactivityTimeoutMs/1000}s — descargando modelo...")
+                unload()
+            }
+        }
+    }
+
+    // Función pública para consultar el estado:
+    fun getIdleTimeMs(): Long = if (lastActivityTime == 0L) 0L
+    else System.currentTimeMillis() - lastActivityTime
+
+    fun isIdle(): Boolean = !isInitialized
+
     suspend fun embed(text: String): List<Float> = withContext(Dispatchers.IO) {
         val vector = FloatArray(384)
         text.forEachIndexed { i, char ->
@@ -355,12 +653,63 @@ class LlmEngine(
         if (norm > 0f) vector.map { it / norm } else vector.toList()
     }
 
-    private fun estimateTokens(text: String): Int = (text.length / 4).coerceAtLeast(1)
+    fun estimateTokens(text: String): Int = (text.length / 3).coerceAtLeast(1) // Más realista para español/código
 
-    private fun logPrompt(label: String, prompt: String) {
+    /**
+     * Verifica si el prompt cabe en el contexto actual dejando margen para la respuesta.
+     */
+    private fun checkContextLimit(prompt: Contents, requestedLimit: Int? = null) {
+        val text = prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+        val estimated = estimateTokens(text)
+        val limit = requestedLimit ?: currentCtx
+
+        // Dejamos un margen del 20% para la respuesta o al menos 256 tokens
+        val margin = (limit * 0.2).toInt().coerceAtLeast(256)
+        val actualLimit = (limit - margin).coerceAtLeast(margin)
+
+        if (estimated > actualLimit) {
+            throw TokenLimitExceededException(estimated, limit)
+        }
+    }
+
+    /**
+     * Comprime la conversación eliminando mensajes antiguos hasta que quepa en un ratio del contexto.
+     * Mantiene el mensaje de sistema si existe.
+     */
+    fun compressConversation(messages: List<ChatMessage>, ratio: Float = 0.5f): List<ChatMessage> {
+        val systemMsg = messages.find { it.role.lowercase() == "system" }
+        val others = messages.filter { it.role.lowercase() != "system" }
+
+        val targetTokens = (currentCtx * ratio).toInt()
+        val currentList = others.toMutableList()
+
+        while (currentList.isNotEmpty()) {
+            val testMessages = if (systemMsg != null) listOf(systemMsg) + currentList else currentList
+            val prompt = buildGemmaChatPrompt(testMessages)
+            val text = prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+            if (estimateTokens(text) <= targetTokens) break
+
+            // Eliminar de dos en dos (par user-model) para coherencia
+            if (currentList.size >= 2) {
+                currentList.removeAt(0)
+                currentList.removeAt(0)
+            } else {
+                currentList.removeAt(0)
+            }
+        }
+
+        return if (systemMsg != null) listOf(systemMsg) + currentList else currentList
+    }
+
+    private fun logPrompt(label: String, prompt: Any) {
         if (Log.isLoggable(TAG, Log.DEBUG)) {
-            val preview = if (prompt.length > LOG_PROMPT_PREVIEW)
-                "${prompt.take(LOG_PROMPT_PREVIEW)}..." else prompt
+            val text = when(prompt) {
+                is Contents -> prompt.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
+                is Content.Text -> prompt.text
+                else -> prompt.toString()
+            }
+            val preview = if (text.length > LOG_PROMPT_PREVIEW)
+                "${text.take(LOG_PROMPT_PREVIEW)}..." else text
             Log.d(TAG, "[$label] Prompt:\n$preview")
         }
     }
@@ -383,3 +732,9 @@ data class GenerationResult(
     val totalDurationNs: Long,
     val evalCount: Int
 )
+
+/**
+ * Excepción lanzada cuando el prompt excede el límite de tokens del contexto.
+ */
+class TokenLimitExceededException(val estimatedTokens: Int, val limit: Int) :
+    Exception("Historial demasiado largo (~$estimatedTokens tokens, límite $limit).")

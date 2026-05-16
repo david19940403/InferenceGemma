@@ -18,6 +18,13 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Forzar extracción de librerías nativas para que LiteRT pueda encontrarlas (Requerido para NPU/QNN)
+        manifestPlaceholders["extractNativeLibs"] = "true"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
         javaCompileOptions {
             annotationProcessorOptions {
                 arguments["room.schemaLocation"] = "$projectDir/schemas"
@@ -25,34 +32,32 @@ android {
         }
     }
 
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-        }
-        debug {
-            resValue("string", "app_name", "Mi App (Debug)")
-            applicationIdSuffix = ".debug"
-            isDebuggable = true
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
         }
     }
+
+    buildTypes {
+        // ...
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    buildFeatures {
-        compose = true
-    }
-    defaultConfig {
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
-    }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            pickFirsts += "**/libLiteRt.so"
+            pickFirsts += "**/libLiteRtClGlAccelerator.so"
+            pickFirsts += "**/libLiteRtGpuAccelerator.so"
+            pickFirsts += "**/liblitert_jni.so"
+            pickFirsts += "**/liblitert_dispatch.so"
+            pickFirsts += "**/liblitert_gpu_delegate.so"
+            keepDebugSymbols += "**/libLiteRt*.so"
+        }
         resources {
             excludes += setOf(
                 "META-INF/INDEX.LIST",
@@ -64,7 +69,6 @@ android {
                 "META-INF/licenses/**",
                 "/META-INF/{AL2.0,LGPL2.1}"
             )
-            // Ktor/Netty trae archivos nativos duplicados
             pickFirsts += setOf("META-INF/native-image/**")
         }
     }
@@ -72,13 +76,16 @@ android {
 
 dependencies {
 
-    implementation(libs.jetbrains.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.android)
     // LiteRT-LM
     implementation(libs.litertlm.android)
 
-    // Standard LiteRT for Embeddings
+    // LiteRT Core and Accelerators
     implementation(libs.litert.core)
-
+    implementation(libs.litert.gpu) {
+        exclude(group = "com.google.ai.edge.litert", module = "litert-api")
+    }
+    implementation(libs.litert.qnn)
 
     implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1") {
         exclude(group = "org.tensorflow", module = "tensorflow-lite")
@@ -111,6 +118,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
