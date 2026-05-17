@@ -35,7 +35,7 @@ class SessionManager(
     private var lastActivityTime: Long = 0L
     private var inactivityJob: Job? = null
 
-    var maxSessions: Int = 1
+    var maxSessions: Int = 5
 
     fun getIdleTimeMs(): Long = if (lastActivityTime == 0L) 0L
     else System.currentTimeMillis() - lastActivityTime

@@ -413,9 +413,13 @@ class LlmEngine(
         }
 
         try {
-            checkContextLimit(prompt, options?.numCtx)
+            val regex = """\[IMAGEGENERATION\]\([^)]+\)""".toRegex()
+            val isImage = regex.find(messages.lastOrNull()?.content ?: "")?.value
+            if (isImage != null) {
+                isImage.replace("IMAGEGENERATION","IMAGERESPONSE")
+                trySend(StreamToken(text = "!$isImage", isDone = true))
+            }else{ checkContextLimit(prompt, options?.numCtx)
             logPrompt("stream", prompt)
-
             val conv = getOrCreateConversation(sid, options)
             var tokenCount = 0
             val maxTokens = options?.numPredict ?: Int.MAX_VALUE
@@ -423,19 +427,26 @@ class LlmEngine(
             val startTime = System.currentTimeMillis()
             var firstTokenTime = 0L
 
-            conv.sendMessageAsync(prompt).collect { result ->
-                if (firstTokenTime == 0L) {
-                    firstTokenTime = System.currentTimeMillis()
-                    lastTimeToFirstTokenMs = firstTokenTime - startTime
+            // Evaluamos los mensajes empezando desde el último (más reciente)
+
+
+
+                conv.sendMessageAsync(prompt).collect { result ->
+                    if (firstTokenTime == 0L) {
+                        firstTokenTime = System.currentTimeMillis()
+                        lastTimeToFirstTokenMs = firstTokenTime - startTime
+                    }
+
+                    val delta = result.text
+                    if (delta.isNotEmpty() && tokenCount < maxTokens) {
+                        tokenCount++
+                        _totalTokensGenerated.incrementAndGet()
+                        trySend(StreamToken(text = delta, isDone = false))
+                    }
                 }
-                
-                val delta = result.text
-                if (delta.isNotEmpty() && tokenCount < maxTokens) {
-                    tokenCount++
-                    _totalTokensGenerated.incrementAndGet()
-                    trySend(StreamToken(text = delta, isDone = false))
-                }
-            }
+
+            // Encuentra la primera coincidencia en el texto
+
             
             val endTime = System.currentTimeMillis()
             val durationSec = (endTime - firstTokenTime) / 1000.0
@@ -443,7 +454,7 @@ class LlmEngine(
                 val calculatedTps = tokenCount / durationSec
                 lastTokensPerSecond = if (calculatedTps.isFinite()) calculatedTps else 0.0
             }
-
+        }
         } catch (e: TokenLimitExceededException) {
             trySend(StreamToken(
                 text = "\n\n⚠️ **Límite de tokens alcanzado**\n" +

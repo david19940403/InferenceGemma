@@ -6,7 +6,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 class ToolManager(
-    private val internalTools: List<Tool> = listOf(WebSearchTool(), UrlReaderTool())
+    private val internalTools: List<Tool> = listOf(WebSearchTool(), UrlReaderTool(), ComfyUIImageTool())
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
