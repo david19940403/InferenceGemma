@@ -5,8 +5,19 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.padding
+import hn.fredi.inferencelocal.agent.TerminalScreen
 import hn.fredi.inferencelocal.ui.components.*
 import hn.fredi.inferencelocal.ui.screens.LlmServerScreen
 
@@ -16,8 +27,37 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             AppTheme {
-                LlmServerScreen()
+                OrchestratorApp()
             }
+        }
+    }
+}
+
+@Composable
+private fun OrchestratorApp() {
+    var tab by remember { mutableIntStateOf(0) }
+    Scaffold(
+        containerColor = BG,
+        bottomBar = {
+            NavigationBar(containerColor = Surface1) {
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { Text("◇") },
+                    label = { Text("Terminal") }
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { Text("⚙") },
+                    label = { Text("Motor") }
+                )
+            }
+        }
+    ) { padding ->
+        when (tab) {
+            0 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { TerminalScreen() }
+            else -> LlmServerScreen()
         }
     }
 }

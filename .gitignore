@@ -8,6 +8,13 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+/.cache/
+/.kotlin/
+/toolstore/store.db*
+/toolstore/toolstore.exe
+/toolstore/toolstore
+/agent-config.local.json
+**/build/
 /build
 /captures
 .externalNativeBuild

@@ -1,0 +1,23 @@
+[
+  {
+    "nombre": "estado_fedora",
+    "descripcion": "Consulta el estado del sistema Fedora Linux, carga y espacio de disco de la MacBook",
+    "target_host": "macbook-fedora.vpn",
+    "command_template": "/opt/agent-tools/system_status.sh",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  },
+  {
+    "nombre": "descargar_video_macbook",
+    "descripcion": "Descarga video YouTube Vimeo o audio MP3 en la MacBook Fedora",
+    "target_host": "macbook-fedora.vpn",
+    "command_template": "/opt/agent-tools/download_video.sh \"{url}\" \"{formato}\"",
+    "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "formato": {"type": "string", "enum": ["video_best", "audio_mp3"], "default": "video_best"}}, "required": ["url"]}
+  },
+  {
+    "nombre": "estado_windows",
+    "descripcion": "Consulta estado y memoria RAM del PC Windows RTX 3060 y espacio de disco",
+    "target_host": "pc-rtx3060.vpn",
+    "command_template": "C:\\AgentTools\\system_status.ps1",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+]

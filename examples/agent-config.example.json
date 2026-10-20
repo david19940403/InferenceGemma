@@ -1,0 +1,12 @@
+{
+  "tool_store_url": "http://192.168.1.10:8000",
+  "token": "REEMPLAZAR_CON_TOKEN_DEL_TOOL_STORE",
+  "model_path": "/storage/emulated/0/Android/data/hn.fredi.inferencelocal/files/model.litertlm",
+  "backend": "NPU",
+  "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nREEMPLAZAR_CON_TU_CLAVE_ED25519\n-----END OPENSSH PRIVATE KEY-----\n",
+  "known_hosts": "macbook-fedora.vpn ssh-ed25519 REEMPLAZAR_CON_CLAVE_PUBLICA_DEL_HOST\npc-rtx3060.vpn ssh-ed25519 REEMPLAZAR_CON_CLAVE_PUBLICA_DEL_HOST\n",
+  "hosts": [
+    {"host": "macbook-fedora.vpn", "user": "agent", "port": 22, "shell": "posix"},
+    {"host": "pc-rtx3060.vpn", "user": "agent", "port": 22, "shell": "powershell"}
+  ]
+}

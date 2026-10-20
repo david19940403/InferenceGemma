@@ -1,0 +1,35 @@
+package hn.fredi.inferencelocal.agent
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.*
+import java.net.HttpURLConnection
+import java.net.URL
+
+class ToolStoreClient(private val config: AgentConfig) {
+    @Serializable private data class SearchResponse(val tools: List<RemoteTool>)
+    suspend fun search(query: String): List<RemoteTool> = withContext(Dispatchers.IO) {
+        val conn = URL(config.tool_store_url.trimEnd('/') + "/tools/search").openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"; conn.connectTimeout = 5000; conn.readTimeout = 10000; conn.instanceFollowRedirects = false
+            conn.setRequestProperty("Content-Type", "application/json")
+            if (config.token.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer ${config.token}")
+            conn.doOutput = true
+            conn.outputStream.use { it.write(buildJsonObject { put("query", query); put("top_k", 3) }.toString().toByteArray()) }
+            check(conn.responseCode == 200) { "Tool Store respondió HTTP ${conn.responseCode}" }
+            val bytes = conn.inputStream.use { it.readBytesBounded(64 * 1024) }
+            Json { ignoreUnknownKeys = true }.decodeFromString<SearchResponse>(bytes.toString(Charsets.UTF_8)).tools.also {
+                require(it.size <= 3 && it.map { t -> t.name }.distinct().size == it.size)
+                require(it.all { t -> t.transport.type == "ssh" && config.hosts.any { h -> h.host == t.transport.target_host } }) { "Catálogo con hosts no autorizados" }
+            }
+        } finally { conn.disconnect() }
+    }
+}
+
+fun java.io.InputStream.readBytesBounded(limit: Int): ByteArray {
+    val output = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(4096)
+    while (true) { val n = read(buffer); if (n < 0) break; require(output.size() + n <= limit) { "Salida excede el límite" }; output.write(buffer, 0, n) }
+    return output.toByteArray()
+}

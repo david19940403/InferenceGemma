@@ -75,6 +75,7 @@ android {
 }
 
 dependencies {
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
 
     implementation(libs.kotlinx.coroutines.android)
     // LiteRT-LM
@@ -104,6 +105,7 @@ dependencies {
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.server.status.pages)
     implementation(libs.slf4j.api)
+    implementation(libs.jsch)
     // ── Kotlinx Serialization ─────────────────────────────────
     implementation(libs.kotlinx.serialization.json)
 
