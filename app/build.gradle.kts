@@ -136,3 +136,13 @@ kotlin {
     }
 }
 
+// The debug host can serve the independently installable, model-free client APK.
+val bundleRemoteClient by tasks.registering(Copy::class) {
+    dependsOn(":client:assembleDebug")
+    from(project(":client").layout.buildDirectory.file("outputs/apk/debug/client-debug.apk"))
+    into(layout.buildDirectory.dir("generated/remoteClientAssets"))
+    rename { "client.apk" }
+}
+android.sourceSets.getByName("debug").assets.srcDir(layout.buildDirectory.dir("generated/remoteClientAssets"))
+tasks.matching { it.name == "mergeDebugAssets" }.configureEach { dependsOn(bundleRemoteClient) }
+

@@ -74,6 +74,9 @@
         <service android:name="hn.fredi.inferencelocal.agent.LiteRTEngineService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User initiated local inference and SSH infrastructure orchestration" />
         </service>
+        <service android:name="hn.fredi.inferencelocal.remote.RemoteAccessService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="User enabled LAN web interface for local engine monitoring and infrastructure actions" />
+        </service>
     </application>
 
 </manifest>

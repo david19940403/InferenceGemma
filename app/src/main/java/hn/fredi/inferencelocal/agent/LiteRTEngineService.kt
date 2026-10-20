@@ -9,8 +9,10 @@ import hn.fredi.inferencelocal.R
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import hn.fredi.inferencelocal.remote.RemoteJobs
+import kotlinx.serialization.Serializable
 
-data class TerminalState(val busy: Boolean = false, val message: String = "Importa la configuración y escribe una instrucción.", val result: String = "")
+@Serializable data class TerminalState(val busy: Boolean = false, val message: String = "Importa la configuración y escribe una instrucción.", val result: String = "")
 class LiteRTEngineService : Service() {
     companion object {
         private val mutableState = MutableStateFlow(TerminalState())
@@ -44,9 +46,11 @@ class LiteRTEngineService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
+        val remoteId = intent?.getStringExtra("remote_job_id")
         if (action == CANCEL) { task?.cancel(); if (task == null) stopSelf(); return START_NOT_STICKY }
-        if (task?.isActive == true) return START_NOT_STICKY
+        if (task?.isActive == true) { RemoteJobs.finish(remoteId,"failed","Hay una operación local en curso"); return START_NOT_STICKY }
         if (action !in listOf(RUN, LOAD, UNLOAD)) { if (!pinned) stopSelf(); return START_NOT_STICKY }
+        RemoteJobs.started(remoteId)
         if (action == LOAD) pinned = true
         if (action == UNLOAD) pinned = false
         val query = intent?.getStringExtra("query").orEmpty()
@@ -56,6 +60,7 @@ class LiteRTEngineService : Service() {
         task = scope.launch {
             var pool: SSHConnectionPool? = null
             var error: String? = null
+            var cancelled = false
             var result = mutableState.value.result
             var message = "Engine listo"
             try {
@@ -69,12 +74,14 @@ class LiteRTEngineService : Service() {
                         val worker = AgenticLoopWorker(ToolStoreClient(config)::search, localEngine, ToolExecutor(connections::execute), config.hosts) { progress ->
                             mutableState.value = mutableState.value.copy(message = progress)
                             EngineMonitor.update { it.copy(message = progress) }
+                            RemoteJobs.progress(remoteId, progress)
                         }
                         result = withTimeout(300000) { worker.processUserIntent(query) }
                         message = "Transacción finalizada"
                     }
                 }
             } catch (e: CancellationException) {
+                cancelled = true
                 if (action == LOAD) pinned = false
                 message = "Operación cancelada o tiempo agotado"
                 if (action == RUN) result = "Una operación remota iniciada puede continuar; consulta su estado antes de repetirla."
@@ -89,6 +96,7 @@ class LiteRTEngineService : Service() {
                     if (!pinned) runCatching { releaseEngine() }
                     EngineMonitor.update { it.copy(taskActive = false, phase = if(error != null) EnginePhase.ERROR else if(it.modelLoaded) EnginePhase.READY else EnginePhase.IDLE, message = message, error = error) }
                     mutableState.value = TerminalState(false, message, result)
+                    RemoteJobs.finish(remoteId, if(cancelled) "cancelled" else if(error != null) "failed" else "succeeded", if(error != null) error!! else message, result)
                 }
                 if (!pinned) stopSelf()
             }

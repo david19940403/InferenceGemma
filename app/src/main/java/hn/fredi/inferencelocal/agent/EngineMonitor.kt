@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import hn.fredi.inferencelocal.remote.RemoteJobs
 
 @Serializable
 data class EngineSettings(
@@ -43,7 +44,7 @@ class EngineSettingsStore(private val context: Context) {
         )
     }
     fun save(settings: EngineSettings) = synchronized(lock) {
-        check(!EngineMonitor.state.value.busy && !EngineMonitor.state.value.modelLoaded) { "Libera el modelo antes de cambiar su configuración" }
+        check(!EngineMonitor.state.value.busy && !EngineMonitor.state.value.modelLoaded && !RemoteJobs.pending) { "Libera el modelo y espera a que termine la operación antes de cambiar su configuración" }
         settings.validate()
         val output = file.startWrite()
         try { output.write(Json.encodeToString(settings).toByteArray()); file.finishWrite(output) }
@@ -51,7 +52,8 @@ class EngineSettingsStore(private val context: Context) {
     }
 }
 
-enum class EnginePhase { IDLE, LOADING, READY, INFERENCING, RELEASING, ERROR }
+@Serializable enum class EnginePhase { IDLE, LOADING, READY, INFERENCING, RELEASING, ERROR }
+@Serializable
 data class EngineMonitorState(
     val phase: EnginePhase = EnginePhase.IDLE,
     val modelLoaded: Boolean = false,

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import hn.fredi.inferencelocal.agent.TerminalScreen
 import hn.fredi.inferencelocal.ui.components.*
 import hn.fredi.inferencelocal.ui.screens.LlmServerScreen
+import hn.fredi.inferencelocal.ui.screens.RemoteAccessScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,12 +53,14 @@ private fun OrchestratorApp() {
                     icon = { Text("⚙") },
                     label = { Text("Motor") }
                 )
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2 }, icon = { Text("◎") }, label = { Text("Red") })
             }
         }
     ) { padding ->
         when (tab) {
             0 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { TerminalScreen() }
-            else -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { LlmServerScreen() }
+            1 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { LlmServerScreen() }
+            else -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { RemoteAccessScreen() }
         }
     }
 }

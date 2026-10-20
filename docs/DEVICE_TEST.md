@@ -52,3 +52,10 @@ Validado también en el mismo SM-S928U:
 - Sin errores AndroidRuntime durante la prueba. Capturas y XML del monitor en `.cache/engine-monitor-test/`.
 
 El dispositivo mostró al instalar el APK depurable un aviso de compatibilidad de alineación de bibliotecas nativas con páginas de 16 KiB. Se aceptó el aviso para probar; la carga e inferencia funcionaron. La actualización de esas bibliotecas para distribución en dispositivos con páginas de 16 KiB queda fuera de este cambio del monitor.
+# Acceso remoto por red (2026-10-20)
+
+Se instalaron el servidor actualizado y el cliente independiente en el Samsung SM-S928U autorizado. Desde una PC en la misma Wi-Fi se accedió directamente a `http://192.168.0.118:11435`, sin forward ADB para este puerto.
+
+Pasaron la autenticación obligatoria, rechazo de claves erróneas y origen externo, validación de configuración, igualdad SHA-256 entre el APK servido y el cliente compilado, carga del modelo con la app en segundo plano, repetición del identificador actual sin duplicar la tarea, rechazo de operaciones concurrentes y de cambios con el modelo cargado. Una intención remota consultó el estado real de Windows mediante el fixture SSH existente. Después se liberó el modelo.
+
+Chrome con Playwright verificó login, cookie HttpOnly/SameSite Strict, recarga con sesión, logout y ausencia de desbordamiento horizontal a 390 px. Capturas y registro: `.cache/remote-test/`. El cliente Android se probó como paquete separado en el mismo Samsung: conexión, login, carga y liberación desde sus botones. También se verificó una cancelación remota que finalizó como `cancelled` con el modelo liberado. No se afirma haberlo probado en un segundo Android físico. La PC sí actuó como otro equipo por Wi-Fi.
