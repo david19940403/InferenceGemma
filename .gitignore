@@ -20,3 +20,23 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Local device selections, credentials and generated test material.
+/.idea/deploymentTargetSelector.xml
+/.idea/deviceManager.xml
+/tmp/
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.enc
+*.litertlm
+**/agent-config.local.json
+**/smoke-config.json
+**/store.db*

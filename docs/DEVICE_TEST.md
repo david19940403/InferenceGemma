@@ -59,3 +59,9 @@ Se instalaron el servidor actualizado y el cliente independiente en el Samsung S
 Pasaron la autenticación obligatoria, rechazo de claves erróneas y origen externo, validación de configuración, igualdad SHA-256 entre el APK servido y el cliente compilado, carga del modelo con la app en segundo plano, repetición del identificador actual sin duplicar la tarea, rechazo de operaciones concurrentes y de cambios con el modelo cargado. Una intención remota consultó el estado real de Windows mediante el fixture SSH existente. Después se liberó el modelo.
 
 Chrome con Playwright verificó login, cookie HttpOnly/SameSite Strict, recarga con sesión, logout y ausencia de desbordamiento horizontal a 390 px. Capturas y registro: `.cache/remote-test/`. El cliente Android se probó como paquete separado en el mismo Samsung: conexión, login, carga y liberación desde sus botones. También se verificó una cancelación remota que finalizó como `cancelled` con el modelo liberado. No se afirma haberlo probado en un segundo Android físico. La PC sí actuó como otro equipo por Wi-Fi.
+
+## Ping de ejemplo
+
+Tras corregir las diferencias de `Test-Connection` entre versiones de PowerShell y habilitar el script fijo en el fixture SSH, una intención desde la PC a la web del Android ejecutó `test-ping.ps1` con `127.0.0.1`. El resultado final fue éxito, cuatro respuestas de cuatro y 0 % de pérdida. El registro SSH confirmó una sola ejecución para esa intención. La configuración se volvió a importar para confiar en la identidad persistida del fixture, y el JSON de importación se eliminó de Descargas después.
+
+Pasaron 12 pruebas unitarias Android, las pruebas Go del fixture y las comprobaciones de ping de éxito/error con Windows PowerShell 5.1 y PowerShell 7. El script puede probarse de nuevo con `integration/ping-smoke.ps1`.

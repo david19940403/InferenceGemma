@@ -53,4 +53,19 @@ class AgentFlowTest {
         assertTrue(prompt.contains("sin red"))
         assertTrue(prompt.contains("\"exit_code\":1"))
     }
+    @Test fun answersFromExistingResultAfterDuplicateProposal() = runBlocking {
+        var count = 0
+        var evaluations = 0
+        val worker = AgenticLoopWorker({ listOf(tool) }, AgentInference { prompt, offered ->
+            evaluations++
+            if (evaluations < 3) call() else {
+                assertTrue(offered.isEmpty())
+                assertTrue(prompt.contains("video.mkv"))
+                """{"final_answer":"Archivo descargado"}"""
+            }
+        }, ToolExecutor { _, _ -> count++; CommandOutput(0, """{"file":"video.mkv"}""", "") }, listOf(HostConfig("fedora.vpn", "agent")))
+        assertEquals("Archivo descargado", worker.processUserIntent("Descarga video"))
+        assertEquals(1, count)
+        assertEquals(3, evaluations)
+    }
 }

@@ -32,12 +32,16 @@ class AgenticLoopWorker(
         require(base.toByteArray().size <= 4800) { "Catálogo demasiado grande para el contexto de 1984 tokens; acorta descripciones y esquemas" }
         val results = mutableListOf<JsonObject>()
         val executed = mutableSetOf<String>()
+        var finishOnly = false
         try {
             repeat(4) { iteration ->
                 progress("Evaluando paso ${iteration + 1}/4…")
-                val prompt = base + "\nResultados: " + JsonArray(results)
+                val prompt = base + "\nResultados: " + JsonArray(results) +
+                    if (results.isNotEmpty()) "\nSi estos resultados resuelven la consulta, llama a finish_transaction(answer). No repitas una ejecución ya realizada." else ""
                 require(prompt.toByteArray().size <= 5600) { "Resultados demasiado grandes para el contexto; reduce la salida del script" }
-                val output = GuidedDecodingValidator.parse(inference.generate(prompt, tools), tools)
+                // After a duplicate proposal, constrain the model to answering from the existing result.
+                val offeredTools = if (finishOnly || iteration == 3) emptyList() else tools
+                val output = GuidedDecodingValidator.parse(inference.generate(prompt, offeredTools), offeredTools)
                 output["final_answer"]?.let { return it.jsonPrimitive.content }
                 // Reserve the last inference for evaluation; never execute a fourth unreviewed command.
                 check(iteration < 3) { "Se alcanzó el límite sin respuesta final; consulta el estado antes de volver a ejecutar" }
@@ -45,7 +49,11 @@ class AgenticLoopWorker(
                 val selected = tools.single { it.name == call.getValue("name").jsonPrimitive.content }
                 val target = hosts.singleOrNull { it.host == selected.transport.target_host } ?: error("Host no autorizado")
                 val command = CommandBuilder.build(selected, call.getValue("arguments").jsonObject, target.shell)
-                check(executed.add(selected.name + command)) { "El modelo repitió una ejecución idéntica; detenida para evitar efectos duplicados" }
+                if (!executed.add(selected.name + command)) {
+                    finishOnly = true
+                    progress("Acción ya ejecutada; preparando respuesta sin repetirla…")
+                    return@repeat
+                }
                 progress("Ejecutando ${selected.name} en ${target.host}…")
                 val result = executor.execute(target.host, command)
                 val payload = if (result.exitCode == 0) result.stdout else result.stderr

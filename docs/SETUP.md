@@ -82,7 +82,7 @@ Los resultados y códigos SSH se incorporan a la siguiente evaluación como dato
 
 - Contexto nativo: 1984 tokens por defecto, configurable entre 512 y 1984. El límite previo por bytes evita catálogos enormes, pero no sustituye al tokenizador; el runtime puede rechazar un prompt que exceda el contexto.
 - Cuatro evaluaciones y hasta tres ejecuciones; el último paso se reserva para responder.
-- Se rechazan ejecuciones idénticas repetidas en la misma transacción.
+- Se bloquean ejecuciones idénticas repetidas en la misma transacción. Si el modelo vuelve a proponer una ya realizada, el siguiente paso permite solo responder usando los resultados existentes.
 - SSH: conexión 5 s, ejecución 120 s, salida combinada hasta 32 KiB.
 - Transacción: 300 s. El contexto conserva hasta 400 caracteres por resultado, marcando truncamientos.
 - Una transacción activa en la UI. El servicio foreground continúa al cambiar de pantalla y libera modelo y conexiones al terminar.

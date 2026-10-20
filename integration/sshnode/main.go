@@ -1,5 +1,5 @@
 // Local-only hardware smoke fixture: authenticates a generated Ed25519 client and
-// permits exactly one fixed, read-only status script. It never executes received shell text.
+// permits fixed read-only status and IP ping scripts. It never executes received shell text.
 package main
 
 import (
@@ -26,12 +26,17 @@ import (
 func main() {
 	dir := flag.String("dir", "../../.cache/device-test", "Private fixture directory")
 	script := flag.String("script", "../../remote-scripts/windows/system_status.ps1", "Only allowed script")
+	ping := flag.String("ping-script", "../../remote-scripts/windows/test-ping.ps1", "Allowed ping script (one IP argument)")
 	flag.Parse()
 	absolute, err := filepath.Abs(*script)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if err = os.MkdirAll(*dir, 0700); err != nil {
+		log.Fatal(err)
+	}
+	pingAbsolute, err := filepath.Abs(*ping)
+	if err != nil {
 		log.Fatal(err)
 	}
 	_, hostPrivate, err := ed25519.GenerateKey(rand.Reader)
@@ -42,7 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	hostSigner, err := ssh.NewSignerFromKey(hostPrivate)
+	hostSigner, err := persistedHostSigner(*dir, hostPrivate)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,6 +65,16 @@ func main() {
 		log.Fatal(err)
 	}
 	token := hex.EncodeToString(tokenBytes)
+	// Reuse client credentials and the catalog token on fixture restarts.
+	key, token, err = reuseClient(*dir, key, token)
+	if err != nil {
+		log.Fatal(err)
+	}
+	clientSigner, err := ssh.ParsePrivateKey([]byte(key))
+	if err != nil {
+		log.Fatal(err)
+	}
+	public = clientSigner.PublicKey()
 	config := map[string]any{"tool_store_url": "http://127.0.0.1:18000", "token": token, "model_path": "/storage/emulated/0/Android/data/hn.fredi.inferencelocal/files/gemma-4-E2B-it.litertlm", "backend": "GPU", "private_key": key, "known_hosts": "[127.0.0.1]:22222 " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hostSigner.PublicKey()))) + "\n", "hosts": []map[string]any{{"host": "127.0.0.1", "user": "agent", "port": 22222, "shell": "powershell"}}}
 	encoded, _ := json.MarshalIndent(config, "", "  ")
 	if err = os.WriteFile(filepath.Join(*dir, "smoke-config.json"), encoded, 0600); err != nil {
@@ -68,8 +83,6 @@ func main() {
 	if err = os.WriteFile(filepath.Join(*dir, "token"), []byte(token), 0600); err != nil {
 		log.Fatal(err)
 	}
-	expected := "& '" + strings.ReplaceAll(absolute, "'", "''") + "'; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }"
-	wire := "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encodeUTF16(expected)
 	serverConfig := &ssh.ServerConfig{PublicKeyCallback: func(c ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
 		if c.User() == "agent" && bytes.Equal(k.Marshal(), public.Marshal()) {
 			return nil, nil
@@ -82,13 +95,13 @@ func main() {
 		log.Fatal(err)
 	}
 	defer listener.Close()
-	log.Print("Isolated SSH status fixture listening on 127.0.0.1:22222")
+	log.Print("Isolated SSH status/ping fixture listening on 127.0.0.1:22222")
 	for {
 		raw, err := listener.Accept()
 		if err != nil {
 			log.Fatal(err)
 		}
-		go serve(raw, serverConfig, wire, absolute)
+		go serve(raw, serverConfig, absolute, pingAbsolute)
 	}
 }
 func encodeUTF16(s string) string {
@@ -100,7 +113,7 @@ func encodeUTF16(s string) string {
 	}
 	return base64.StdEncoding.EncodeToString(data)
 }
-func serve(raw net.Conn, config *ssh.ServerConfig, expected, script string) {
+func serve(raw net.Conn, config *ssh.ServerConfig, statusScript, pingScript string) {
 	conn, chans, requests, err := ssh.NewServerConn(raw, config)
 	if err != nil {
 		raw.Close()
@@ -125,19 +138,25 @@ func serve(raw net.Conn, config *ssh.ServerConfig, expected, script string) {
 					continue
 				}
 				var payload struct{ Command string }
-				if ssh.Unmarshal(req.Payload, &payload) != nil || payload.Command != expected {
+				if ssh.Unmarshal(req.Payload, &payload) != nil {
+					req.Reply(false, nil)
+					return
+				}
+				script, args, ok := resolve(payload.Command, statusScript, pingScript)
+				if !ok {
 					req.Reply(false, nil)
 					return
 				}
 				req.Reply(true, nil)
-				cmd := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script)
+				arguments := append([]string{"-NoLogo", "-NoProfile", "-NonInteractive", "-File", script}, args...)
+				cmd := exec.Command("powershell.exe", arguments...)
 				cmd.Stdout = channel
 				cmd.Stderr = channel.Stderr()
 				code := uint32(0)
 				if err := cmd.Run(); err != nil {
 					code = 1
 				}
-				log.Printf("Executed fixed read-only status script; exit=%d", code)
+				log.Printf("Executed fixed %s script; exit=%d", filepath.Base(script), code)
 				channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
 				return
 			}
