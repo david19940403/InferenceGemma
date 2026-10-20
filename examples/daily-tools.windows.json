@@ -1,0 +1,120 @@
+[
+  {
+    "name": "diagnostico_vpn_pc",
+    "description": "Revisa WireGuard, interfaces VPN y direcciones 10.12.14 y 192.168.9 de esta PC",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 vpn",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "estado_git_proyecto",
+    "description": "Revisa rama Git, cambios pendientes y archivos sin seguimiento de un proyecto",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 git \"{proyecto}\"",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "proyecto": {
+          "type": "string",
+          "enum": [
+            "inferencegemma",
+            "scanflex",
+            "posandroid",
+            "prestashop"
+          ]
+        }
+      },
+      "required": [
+        "proyecto"
+      ]
+    }
+  },
+  {
+    "name": "dispositivos_android_adb",
+    "description": "Lista dispositivos Android y terminales POS conectados por ADB, modelos y autorizacion",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 adb",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "servicios_desarrollo_pc",
+    "description": "Consulta puertos locales de n8n, MySQL, PostgreSQL, SSH y Tool Store; estado de Docker",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 servicios",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "auditar_imagenes_productos",
+    "description": "Revisa imagenes de productos para PrestaShop: cantidad, formatos, dimensiones y archivos ilegibles",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 imagenes \"{carpeta}\"",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "carpeta": {
+          "type": "string",
+          "enum": [
+            "productos"
+          ]
+        }
+      },
+      "required": [
+        "carpeta"
+      ]
+    }
+  },
+  {
+    "name": "validar_workflow_n8n",
+    "description": "Valida el JSON del workflow n8n de aperturas TakePOS y sus conexiones sin ejecutarlo",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 n8n \"{workflow}\"",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "workflow": {
+          "type": "string",
+          "enum": [
+            "aperturas_takepos"
+          ]
+        }
+      },
+      "required": [
+        "workflow"
+      ]
+    }
+  },
+  {
+    "name": "localizar_apk_proyecto",
+    "description": "Busca el APK compilado mas reciente de InferenceGemma, ScanFlex o posandroid y su tamano",
+    "target_host": "pc-windows.vpn",
+    "command_template": "C:\\AgentTools\\daily-tools.ps1 apks \"{proyecto}\"",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "proyecto": {
+          "type": "string",
+          "enum": [
+            "inferencegemma",
+            "scanflex",
+            "posandroid"
+          ]
+        }
+      },
+      "required": [
+        "proyecto"
+      ]
+    }
+  }
+]

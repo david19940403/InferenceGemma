@@ -1,5 +1,5 @@
 // Local-only hardware smoke fixture: authenticates a generated Ed25519 client and
-// permits fixed read-only status and IP ping scripts. It never executes received shell text.
+// permits fixed read-only status, IP ping and approved daily diagnostics. It never executes received shell text.
 package main
 
 import (

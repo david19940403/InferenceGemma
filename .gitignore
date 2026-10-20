@@ -40,3 +40,5 @@ local.properties
 **/agent-config.local.json
 **/smoke-config.json
 **/store.db*
+__pycache__/
+*.py[cod]

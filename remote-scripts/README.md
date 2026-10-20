@@ -1,5 +1,7 @@
 # Tools por SSH: entradas, plantillas y salidas
 
+Consulta también las [tools diarias para Windows](../docs/DAILY_PC_TOOLS.md), con ejemplos de uso y configuración local.
+
 Una tool es un script instalado en un nodo SSH. El catálogo guarda su nombre, descripción, host, ruta y esquema de entradas. Android recupera la descripción, genera argumentos validados y abre SSH usando su configuración privada.
 
 ## Conexión
