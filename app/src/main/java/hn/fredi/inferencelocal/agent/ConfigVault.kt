@@ -13,7 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Ed25519 is imported into JSch only in memory; Android Keystore wraps it with AES-GCM. */
-class ConfigVault(context: Context) {
+class ConfigVault(private val context: Context) {
     private val file = File(context.noBackupFilesDir, "infrastructure.enc")
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -24,6 +24,7 @@ class ConfigVault(context: Context) {
         }.generateKey()
     }
     fun save(text: String) {
+        check(!EngineMonitor.state.value.busy && !EngineMonitor.state.value.modelLoaded) { "Libera el engine en la pestaña Motor antes de importar otra configuración" }
         require(text.toByteArray().size <= 128 * 1024) { "Configuración demasiado grande" }
         val config = Json.decodeFromString<AgentConfig>(text).also { it.validate() }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
@@ -31,6 +32,8 @@ class ConfigVault(context: Context) {
         val temp = File(file.parentFile, "infrastructure.tmp")
         temp.writeBytes(cipher.iv + encrypted)
         check(temp.renameTo(file)) { "No se pudo guardar la configuración" }
+        val store = EngineSettingsStore(context)
+        store.save(store.load().copy(modelPath = config.model_path, backend = config.backend))
     }
     fun load(): AgentConfig {
         require(file.exists()) { "Importa una configuración para comenzar" }

@@ -57,7 +57,7 @@ private fun OrchestratorApp() {
     ) { padding ->
         when (tab) {
             0 -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { TerminalScreen() }
-            else -> LlmServerScreen()
+            else -> androidx.compose.foundation.layout.Box(Modifier.padding(padding)) { LlmServerScreen() }
         }
     }
 }

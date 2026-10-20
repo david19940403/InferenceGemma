@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
+import androidx.compose.material3.FilterChip
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,7 +35,19 @@ import hn.fredi.inferencelocal.ui.components.*
 import hn.fredi.inferencelocal.ui.viewmodels.LlmServerViewModel
 
 @Composable
-fun LlmServerScreen(viewModel: LlmServerViewModel = viewModel()) {
+fun LlmServerScreen() {
+    var apiMode by rememberSaveable { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().background(BG)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FilterChip(selected = !apiMode, onClick = { apiMode = false }, label = { Text("Engine terminal") })
+            FilterChip(selected = apiMode, onClick = { apiMode = true }, label = { Text("Servidor API") })
+        }
+        Box(Modifier.weight(1f)) { if(apiMode) LlmServerApiScreen() else EngineMonitorScreen() }
+    }
+}
+
+@Composable
+private fun LlmServerApiScreen(viewModel: LlmServerViewModel = viewModel()) {
     val configuration = LocalConfiguration.current
     val isTablet = configuration.screenWidthDp >= 600 || configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val scroll = rememberScrollState()

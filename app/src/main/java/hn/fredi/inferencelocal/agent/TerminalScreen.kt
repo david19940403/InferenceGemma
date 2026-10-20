@@ -32,8 +32,9 @@ fun TerminalScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state by LiteRTEngineService.state.collectAsState()
+    val runtime by EngineMonitor.state.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
-    var configStatus by remember { mutableStateOf(runCatching { ConfigVault(context).load().let { "${it.hosts.size} hosts · ${it.backend}" } }.getOrDefault("Sin configuración")) }
+    var configStatus by remember { mutableStateOf(runCatching { ConfigVault(context).load().let { "${it.hosts.size} hosts · ${EngineSettingsStore(context).load().backend}" } }.getOrDefault("Sin configuración")) }
     var importing by remember { mutableStateOf(false) }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
@@ -53,7 +54,7 @@ fun TerminalScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(configStatus)
-                OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/*", "application/octet-stream")) }, enabled = !state.busy && !importing) { Text(if (importing) "Importando…" else "Importar configuración JSON") }
+                OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/*", "application/octet-stream")) }, enabled = !state.busy && !runtime.busy && !runtime.modelLoaded && !importing) { Text(if (importing) "Importando…" else "Importar configuración JSON") }
                 Text("LiteRT-LM local · Go · SSH con claves de host verificadas", style = MaterialTheme.typography.bodySmall)
             }
         }

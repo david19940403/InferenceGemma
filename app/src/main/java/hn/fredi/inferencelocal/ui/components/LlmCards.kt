@@ -205,7 +205,7 @@ fun StatsCard(ui: UiState) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 InfoPill(
                     label = "CONTEXTO",
-                    value = "${ui.maxTokens / 1024}K",
+                    value = if(ui.maxTokens % 1024 == 0) "${ui.maxTokens / 1024}K" else ui.maxTokens.toString(),
                     accent = AccentAmber,
                     modifier = Modifier.weight(1f)
                 )

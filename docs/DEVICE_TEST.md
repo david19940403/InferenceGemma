@@ -38,3 +38,17 @@ Compila la fixture desde `integration/sshnode` con `go build -o ../../.cache/dev
 Genera un nuevo `smoke-config.json` y un archivo `token` en el directorio privado indicado. Reiniciar la fixture rota las claves: vuelve a importar el JSON en Android y usa el nuevo token en Tool Store. La fixture solo escucha en loopback. El script de consulta y la orden registrada deben coincidir exactamente con la ruta absoluta del repositorio.
 
 Las capturas y evidencias locales están en `.cache/device-test/`, ignorado por Git. La captura final es `result.png`.
+
+## Monitor del engine Android
+
+Validado también en el mismo SM-S928U:
+
+- El monitor anterior sigue disponible en **Motor → Servidor API**.
+- **Motor → Engine terminal** permite guardar CPU y volver a GPU; la configuración persistida se verificó en `no_backup/engine-settings.json` sin exponer las credenciales SSH.
+- Carga manual del Gemma 4 E2B en GPU y reutilización del modelo para una intención real de consulta Windows.
+- El monitor reflejó backend GPU y contexto 1984. Benchmark de la segunda evaluación: 22.5 tokens/s, TTFT 495 ms; carga inicial 4.2 s, 115 tokens de salida acumulados.
+- Se comprobó que el intento de iniciar el servidor API con la terminal cargada se rechaza con un mensaje de reserva del acelerador.
+- **Liberar modelo** devolvió el estado a DESCARGADO y el backend activo a «—», conservando las métricas anteriores. PSS del proceso después de liberar: aproximadamente 285 MiB.
+- Sin errores AndroidRuntime durante la prueba. Capturas y XML del monitor en `.cache/engine-monitor-test/`.
+
+El dispositivo mostró al instalar el APK depurable un aviso de compatibilidad de alineación de bibliotecas nativas con páginas de 16 KiB. Se aceptó el aviso para probar; la carga e inferencia funcionaron. La actualización de esas bibliotecas para distribución en dispositivos con páginas de 16 KiB queda fuera de este cambio del monitor.

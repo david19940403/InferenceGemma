@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import hn.fredi.inferencelocal.MainActivity
+import hn.fredi.inferencelocal.agent.EngineOwnership
 import hn.fredi.inferencelocal.api.LlmEngineKey
 import hn.fredi.inferencelocal.api.ModelRegistryKey
 import hn.fredi.inferencelocal.api.engine.LlmEngine
@@ -241,6 +242,11 @@ class LlmServerService : Service(), ComponentCallbacks2 {
         serviceScope.cancel()
         serviceJob.cancel()
         releaseLocks()
+        val closingEngine = engine
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { closingEngine?.unload() }
+            EngineOwnership.release("servidor API")
+        }
         super.onDestroy()
     }
 
@@ -250,6 +256,7 @@ class LlmServerService : Service(), ComponentCallbacks2 {
 
     private suspend fun initModelAndServer() {
         try {
+            EngineOwnership.claim("servidor API")
             // 1. Validar archivo de modelo
             val modelsDir = getExternalFilesDir(null)
                 ?: throw IllegalStateException("No se puede acceder al almacenamiento externo")
@@ -403,6 +410,7 @@ class LlmServerService : Service(), ComponentCallbacks2 {
             engine?.unload()   // también resetea totalTokensGenerated
         }.onFailure { Log.w(TAG, "Error al descargar modelo: ${it.message}") }
         engine = null
+		EngineOwnership.release("servidor API")
 
         registry?.clearActiveModel()
         registry = null

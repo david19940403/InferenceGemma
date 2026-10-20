@@ -16,6 +16,7 @@ import hn.fredi.inferencelocal.service.LlmServerService
 import hn.fredi.inferencelocal.UiPhase
 import hn.fredi.inferencelocal.UiState
 import hn.fredi.inferencelocal.getAvailableModels
+import hn.fredi.inferencelocal.agent.EngineOwnership
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -208,6 +209,10 @@ class LlmServerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startServer() {
+        if (EngineOwnership.owner.value == "terminal") {
+            uiState = uiState.copy(phase = UiPhase.ERROR, message = "Libera el engine de la terminal antes de iniciar el servidor API", errorDetail = "El modelo de la terminal tiene el acelerador reservado.")
+            return
+        }
         val intent = LlmServerService.startIntent(
             context = getApplication(),
             modelName = modelSelected,
