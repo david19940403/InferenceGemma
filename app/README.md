@@ -74,3 +74,6 @@ Contexto: 512–1984 tokens; temperatura: 0–2; top K: 1–64; top P: mayor de 
 Activa **Red** en el servidor y abre `http://IP-DEL-ANDROID:11435` desde otro equipo. La clave que muestra Red autentica el panel; **no es el token del catálogo**. El APK cliente pide esta URL del Android, no la URL del PC Tool Store. La web y el cliente comparten la configuración del servidor, sin guardar las claves SSH en el equipo cliente.
 
 [API, autenticación y descarga del cliente](../docs/REMOTE_ACCESS.md) · [Búsqueda LAN/VPN](../docs/TOOLSTORE_NETWORK.md) · [Formato de tools y salidas](../remote-scripts/README.md)
+
+
+Consulta de varios catálogos por PC, tokens propios y tolerancia a desconexiones: [Tool Stores federados](../docs/FEDERATED_TOOLSTORES.md).

@@ -59,7 +59,8 @@ fun TerminalScreen() {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(configStatus)
-                Text("Tool Store guardado: ${(networkChanges?.url ?: toolStoreUrl).ifBlank { "Sin dirección" }}",style=MaterialTheme.typography.bodySmall)
+                val catalogs = networkChanges ?: ToolStoreSettingsStore(context).load()
+                Text("Catálogos activos: " + ((if(catalogs.primaryEnabled) listOf(catalogs.url) else emptyList()) + catalogs.stores.filter { it.enabled }.map { "${it.label}: ${it.url}" }).joinToString(" · "),style=MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick={showToolStore=true},enabled=!importing) {Text("Configurar Tool Store")}
                 OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/*", "application/octet-stream")) }, enabled = !state.busy && !runtime.busy && !runtime.modelLoaded && !importing) { Text(if (importing) "Importando…" else "Importar configuración JSON") }
                 Text("Importar JSON también aplica la dirección tool_store_url de ese archivo.",style=MaterialTheme.typography.bodySmall)

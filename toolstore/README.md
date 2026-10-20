@@ -76,3 +76,6 @@ El índice compara palabras de nombre, descripción y host, con normalización d
 | POST | `/tools/search` | Recuperar hasta tres acciones. |
 
 [Esquemas de parámetros, plantillas y salidas](../remote-scripts/README.md) · [Administrador](../docs/ADMIN.md) · [Configuración Android](../app/README.md)
+
+
+Consulta de varios catálogos por PC, tokens propios y tolerancia a desconexiones: [Tool Stores federados](../docs/FEDERATED_TOOLSTORES.md).

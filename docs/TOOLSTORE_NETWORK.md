@@ -8,7 +8,7 @@ Introduce la dirección del PC que ejecuta el catálogo, incluyendo esquema y pu
 
 No se fija una interfaz Wi-Fi ni se restringen subredes en la app: se utilizan DNS y las rutas que Android tenga para la LAN o VPN activa. Cambiar la dirección no configura la VPN, no escanea la red y no elige servidores desconocidos automáticamente. La nueva dirección se usa al comenzar la siguiente intención. No requiere liberar el modelo, pero se bloquean los cambios mientras haya una operación activa o pendiente.
 
-El token continúa en la configuración cifrada importada. Los dos destinos deben aceptar ese token; si utilizas otro catálogo con una clave diferente, importa la configuración correspondiente. Importar un JSON actualiza también la dirección del Tool Store. Los ajustes de dirección y reformulación quedan en un archivo privado de `noBackupFilesDir`, sin duplicar el token ni las claves SSH.
+El catálogo principal usa el token de la configuración cifrada importada. Para otro catálogo con una clave diferente, pulsa **Agregar PC / catálogo**, desactiva **Usar token importado** e introduce su token propio. Puedes mantener ambos activos. Importar un JSON actualiza la dirección principal y conserva los catálogos adicionales. Los ajustes y tokens propios quedan cifrados mediante AndroidKeyStore en `noBackupFilesDir`; las claves SSH permanecen en ConfigVault. Consulta [Tool Stores federados](FEDERATED_TOOLSTORES.md) para el formato completo.
 
 ## Por qué puede aparecer 127.0.0.1
 
@@ -41,7 +41,7 @@ La opción **Reformular la búsqueda si no encuentra herramientas** está activa
 
 Cada reformulación usa una conversación nueva sin herramientas remotas ejecutables. El motor conserva los pesos, pero cierra esa conversación antes de crear las de ejecución. No se descarga otro modelo ni se mantiene un segundo engine. El límite de cuatro evaluaciones del worker sigue aplicando a la ejecución; la búsqueda puede añadir hasta dos evaluaciones previas. El límite global de tiempo de la transacción sigue siendo de 300 segundos.
 
-Un fallo de conexión, un token rechazado o un fallo del modelo no se interpreta como una búsqueda vacía. Una respuesta del modelo inválida se descarta. Si tampoco se encuentran herramientas tras los intentos válidos, no se ejecuta ninguna acción. Este mecanismo mejora la recuperación por palabras clave del Tool Store actual; no sustituye su índice TF-IDF por embeddings ni garantiza encontrar una acción que no exista.
+Los catálogos disponibles se consultan en paralelo. Un fallo de conexión o un token rechazado afecta solo a ese catálogo; si todos fallan, no se interpreta como una búsqueda vacía. Los fallos del modelo se propagan y una respuesta del modelo inválida se descarta. Si tampoco se encuentran herramientas tras los intentos válidos, no se ejecuta ninguna acción. Este mecanismo mejora la recuperación por palabras clave del Tool Store actual; no sustituye su índice TF-IDF por embeddings ni garantiza encontrar una acción que no exista.
 
 ## API del panel remoto
 
@@ -60,3 +60,6 @@ En el Samsung SM-S928U se guardó una dirección del PC desde el diálogo nativo
 La consulta `Averigua conectividad hacia ::1` devolvía cero herramientas directamente. Con la opción desactivada no hubo evaluaciones del modelo. Al activarla, LiteRT recuperó la acción de ping mediante reformulación y el worker respondió con el resultado real, manteniendo la consulta original. La prueba también guardó ambas direcciones rápidas con el modelo cargado, sin realizar conexiones a ellas: no se afirma haber validado un Tool Store real en esas dos IP.
 
 Pasaron 17 pruebas unitarias Android, incluidas pruebas de aislamiento de contexto, límites, errores, cancelación y direcciones. Playwright verificó los accesos rápidos, guardado, prueba de conexión y diseño móvil/escritorio. `integration/toolstore-network-smoke.cjs` repite la prueba con `REMOTE_BASE` y `NETWORK_CATALOG_URL`; requiere el fixture SSH y las credenciales locales de prueba. Al terminar se restauró la dirección original y se cerró el servidor temporal. Las evidencias están en `.cache/toolstore-network-test/` y no se publican.
+
+
+Consulta de varios catálogos por PC, tokens propios y tolerancia a desconexiones: [Tool Stores federados](FEDERATED_TOOLSTORES.md).

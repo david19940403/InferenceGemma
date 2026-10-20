@@ -49,7 +49,7 @@ class AgenticLoopWorker(
                 val selected = tools.single { it.name == call.getValue("name").jsonPrimitive.content }
                 val target = hosts.singleOrNull { it.host == selected.transport.target_host } ?: error("Host no autorizado")
                 val command = CommandBuilder.build(selected, call.getValue("arguments").jsonObject, target.shell)
-                if (!executed.add(selected.name + command)) {
+                if (!executed.add(selected.transport.target_host + "\u0000" + command)) {
                     finishOnly = true
                     progress("Acción ya ejecutada; preparando respuesta sin repetirla…")
                     return@repeat

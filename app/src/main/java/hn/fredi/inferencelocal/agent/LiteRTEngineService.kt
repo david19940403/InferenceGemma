@@ -72,7 +72,7 @@ class LiteRTEngineService : Service() {
                         val localEngine = getEngine()
                         val connections = SSHConnectionPool(config).also { pool = it }
                         val network = ToolStoreSettingsStore(this@LiteRTEngineService).load()
-                        val catalog = ToolStoreClient(config.copy(tool_store_url = network.url.ifBlank { config.tool_store_url }))
+                        val catalog = FederatedToolStoreClient(ToolStoreSettingsStore(this@LiteRTEngineService).connections(config, network)) { source, query -> ToolStoreClient(config.copy(tool_store_url = source.url, token = source.token)).search(query) }
                         val onProgress: (String) -> Unit = { progress ->
                             mutableState.value = mutableState.value.copy(message = progress)
                             EngineMonitor.update { it.copy(message = progress) }

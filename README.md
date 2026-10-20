@@ -73,3 +73,6 @@ Hay un paquete de [siete tools diarias para esta PC](docs/DAILY_PC_TOOLS.md): VP
 - [Revisión de exposición en GitHub](docs/SECURITY_REVIEW.md)
 
 La reformulación se usa solo si la búsqueda no recupera herramientas. Sus palabras no cambian la instrucción ni el contexto de ejecución. El worker admite hasta tres ejecuciones y cuatro evaluaciones, y bloquea llamadas idénticas para evitar efectos duplicados.
+
+
+Consulta de varios catálogos por PC, tokens propios y tolerancia a desconexiones: [Tool Stores federados](docs/FEDERATED_TOOLSTORES.md).

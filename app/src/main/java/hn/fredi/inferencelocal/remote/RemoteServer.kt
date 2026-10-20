@@ -22,7 +22,8 @@ private val wire = Json { encodeDefaults = true }
 @Serializable private data class IntentRequest(val query: String, val request_id: String)
 @Serializable private data class EngineRequest(val action: String, val request_id: String)
 @Serializable private data class SettingsResponse(val settings: EngineSettings, val models: List<String>)
-@Serializable private data class StatusResponse(val engine: EngineMonitorState, val terminal: TerminalState, val owner: String?, val job: RemoteJob?, val ram_available_mb: Long, val process_pss_mb: Int, val toolstore: ToolStoreSettings)
+@Serializable private data class CatalogProbeResponse(val url: String, val message: String, val sources: List<CatalogStatus>)
+@Serializable private data class StatusResponse(val engine: EngineMonitorState, val terminal: TerminalState, val owner: String?, val job: RemoteJob?, val ram_available_mb: Long, val process_pss_mb: Int, val toolstore: ToolStoreSettings, val catalogs: List<CatalogStatus> = CatalogMonitor.state.value)
 private suspend inline fun <reified T> ApplicationCall.json(value: T, status: HttpStatusCode = HttpStatusCode.OK) = respondText(wire.encodeToString(value), ContentType.Application.Json, status)
 private suspend inline fun <reified T> ApplicationCall.body(): T {
     val bytes = receiveChannel().readRemaining(65537).readBytes()
@@ -109,13 +110,13 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
         } }
         post("/remote/toolstore/test") { call.guarded {
             val value=call.body<ToolStoreSettings>()
-            val address=ToolStoreEndpoint.normalize(value.url)
-            try {
-                withContext(Dispatchers.IO) { ToolStoreClient(ConfigVault(context).load().copy(tool_store_url=address)).probe() }
-                call.json(mapOf("url" to address,"message" to "Conexión autorizada con $address"))
-            } catch(e: java.io.IOException) {
-                call.json(mapOf("error" to "No se pudo conectar al Tool Store. Revisa IP, puerto y rutas LAN/VPN."),HttpStatusCode.ServiceUnavailable)
+            val config=ConfigVault(context).load()
+            val client=FederatedToolStoreClient(ToolStoreSettingsStore(context).connections(config,value)) { source, query ->
+                ToolStoreClient(config.copy(tool_store_url=source.url,token=source.token)).search(query)
             }
+            try { client.search("__connection_test__") } catch(e: kotlinx.coroutines.CancellationException) { throw e }
+            catch(e: IllegalStateException) { /* Include per-node results even when every node is unavailable. */ }
+            call.json(CatalogProbeResponse(value.url, "${client.statuses.count { it.status == "ok" }} catálogos disponibles. Probar no guarda cambios.", client.statuses))
         } }
         post("/remote/intents") { call.guarded { val request = call.body<IntentRequest>(); call.json(submit("intent",request.query,request.request_id),HttpStatusCode.Accepted) } }
         post("/remote/engine") { call.guarded {
