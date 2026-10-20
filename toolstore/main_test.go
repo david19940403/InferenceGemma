@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -91,5 +92,94 @@ func TestRankingAndAuth(t *testing.T) {
 	json.Unmarshal([]byte(`{"nombre":"bad","descripcion":"test","target_host":"host","command_template":"s {missing}","parameters":{"type":"object","properties":{}}}`), &tool)
 	if validate(tool) == nil {
 		t.Fatal("missing placeholder accepted")
+	}
+}
+
+func TestLocalAdminSession(t *testing.T) {
+	s, err := openStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	s.token = "private-api-token"
+	s.adminCode = "one-use-local-code"
+	h := s.routes()
+	remote := httptest.NewRequest("GET", "/auth/bootstrap?code=one-use-local-code", nil)
+	remote.RemoteAddr = "192.0.2.10:1234"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, remote)
+	if w.Code != 404 {
+		t.Fatal("remote bootstrap accepted", w.Code)
+	}
+	req := httptest.NewRequest("GET", "/auth/bootstrap?code=one-use-local-code", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 303 || w.Header().Get("Location") != "/" {
+		t.Fatal("bootstrap failed", w.Code)
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatal("session cookie missing protection")
+	}
+	cookie := cookies[0]
+	replay := httptest.NewRecorder()
+	h.ServeHTTP(replay, req)
+	if replay.Code != 404 {
+		t.Fatal("bootstrap code reused")
+	}
+	check := func(header string, expected int) {
+		r := httptest.NewRequest("GET", "/api/tools", nil)
+		r.AddCookie(cookie)
+		if header != "" {
+			r.Header.Set("Authorization", header)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != expected {
+			t.Fatalf("session/header auth got %d want %d", w.Code, expected)
+		}
+	}
+	check("", 200)
+	check("Bearer wrong-token", 401)
+	evil := httptest.NewRequest("POST", "/auth/logout", nil)
+	evil.AddCookie(cookie)
+	evil.Header.Set("Origin", "https://other.invalid")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, evil)
+	if w.Code != 403 {
+		t.Fatal("cross-origin logout allowed")
+	}
+	check("", 200)
+	logout := httptest.NewRequest("POST", "/auth/logout", nil)
+	logout.AddCookie(cookie)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, logout)
+	if w.Code != 204 {
+		t.Fatal("logout failed")
+	}
+	check("", 401)
+}
+
+func TestDashboardAssets(t *testing.T) {
+	s, err := openStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	h := s.routes()
+	for _, path := range []string{"/", "/assets/styles.css", "/assets/app.js"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 200 || w.Body.Len() == 0 {
+			t.Fatal("missing asset", path, w.Code)
+		}
+	}
+	for _, path := range []string{"/assets/missing.js", "/assets/main.go"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != 404 {
+			t.Fatal("unexpected asset", path, w.Code)
+		}
 	}
 }

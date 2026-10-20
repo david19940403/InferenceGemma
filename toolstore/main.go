@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -44,9 +49,13 @@ type formattedTool struct {
 }
 
 type server struct {
-	db    *sql.DB
-	page  *template.Template
-	token string
+	db           *sql.DB
+	page         *template.Template
+	token        string
+	adminMu      sync.Mutex
+	adminCode    string
+	adminSession string
+	adminExpires time.Time
 }
 
 //go:embed dashboard.html web/*
@@ -59,6 +68,7 @@ func main() {
 	}
 	defer s.db.Close()
 	s.token = os.Getenv("TOOLSTORE_TOKEN")
+	s.adminCode = os.Getenv("TOOLSTORE_ADMIN_CODE")
 	addr := env("TOOLSTORE_ADDR", "127.0.0.1:8000")
 	log.Printf("Tool Store escuchando en %s", addr)
 	srv := &http.Server{Addr: addr, Handler: requestLog(s.routes()), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
@@ -95,6 +105,8 @@ func openStore(dsn string) (*server, error) {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /auth/bootstrap", s.bootstrap)
+	mux.HandleFunc("POST /auth/logout", s.logout)
 	mux.HandleFunc("GET /assets/{file}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("file")
 		mime := map[string]string{"app.js": "text/javascript; charset=utf-8", "styles.css": "text/css; charset=utf-8"}[name]
@@ -130,7 +142,7 @@ func (s *server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/tools/search" {
-			if s.token != "" && r.Header.Get("Authorization") != "Bearer "+s.token {
+			if s.token != "" && !s.authorized(r) {
 				problem(w, 401, errors.New("no autorizado"))
 				return
 			}
@@ -139,8 +151,66 @@ func (s *server) authorize(next http.Handler) http.Handler {
 				return
 			}
 		}
+		if r.URL.Path == "/auth/logout" {
+			if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host {
+				problem(w, 403, errors.New("origen no permitido"))
+				return
+			}
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *server) authorized(r *http.Request) bool {
+	if header := r.Header.Get("Authorization"); header != "" {
+		return subtle.ConstantTimeCompare([]byte(header), []byte("Bearer "+s.token)) == 1
+	}
+	cookie, err := r.Cookie("toolstore_admin")
+	if err != nil {
+		return false
+	}
+	s.adminMu.Lock()
+	defer s.adminMu.Unlock()
+	return s.adminSession != "" && time.Now().Before(s.adminExpires) && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.adminSession)) == 1
+}
+
+// Optional one-use link issued by the local operator. The API token never enters the URL.
+func (s *server) bootstrap(w http.ResponseWriter, r *http.Request) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
+		http.NotFound(w, r)
+		return
+	}
+	s.adminMu.Lock()
+	defer s.adminMu.Unlock()
+	code := r.URL.Query().Get("code")
+	if s.adminCode == "" || subtle.ConstantTimeCompare([]byte(code), []byte(s.adminCode)) != 1 {
+		http.NotFound(w, r)
+		return
+	}
+	random := make([]byte, 32)
+	if _, err := rand.Read(random); err != nil {
+		problem(w, 500, errors.New("no se pudo iniciar la sesión"))
+		return
+	}
+	s.adminCode = ""
+	s.adminSession = hex.EncodeToString(random)
+	s.adminExpires = time.Now().Add(8 * time.Hour)
+	http.SetCookie(w, &http.Cookie{Name: "toolstore_admin", Value: s.adminSession, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: 8 * 60 * 60})
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *server) logout(w http.ResponseWriter, r *http.Request) {
+	s.adminMu.Lock()
+	defer s.adminMu.Unlock()
+	if cookie, err := r.Cookie("toolstore_admin"); err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.adminSession)) == 1 {
+		s.adminSession = ""
+		s.adminExpires = time.Time{}
+	}
+	http.SetCookie(w, &http.Cookie{Name: "toolstore_admin", Value: "", Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func initDB(db *sql.DB) error {

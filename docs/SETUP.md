@@ -34,10 +34,13 @@ Get-Content ../examples/tools.json -Raw | ConvertFrom-Json | ForEach-Object {
 | GET | `/healthz` | Salud SQLite y tipo de índice |
 | GET | `/api/tools` | Listar |
 | POST | `/api/tools` | Registrar |
+| PUT | `/api/tools/{id}` | Editar conservando el ID |
 | DELETE | `/api/tools/{id}` | Eliminar; 404 si no existe |
 | POST | `/tools/search` | `{ "query": "estado Fedora", "top_k": 3 }` |
 
 El alta admite `nombre`/`descripcion` y `name`/`description`. La búsqueda devuelve `name`, `description`, `transport`, `parameters`. Los nombres son únicos y K admite 1–3. El índice usa vectores dispersos TF-IDF con similitud coseno y normalización de acentos. Es recuperación léxica local; no usa embeddings neuronales ni recupera sinónimos sin coincidencias de palabras. Incluye el vocabulario de las intenciones en las descripciones.
+
+Consulta [el administrador de acciones](ADMIN.md) para las plantillas, los parámetros visuales, la edición del catálogo y las opciones de acceso al panel.
 
 ## Nodos SSH
 
