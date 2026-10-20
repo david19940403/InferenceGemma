@@ -54,6 +54,8 @@ Validado también en el mismo SM-S928U:
 El dispositivo mostró al instalar el APK depurable un aviso de compatibilidad de alineación de bibliotecas nativas con páginas de 16 KiB. Se aceptó el aviso para probar; la carga e inferencia funcionaron. La actualización de esas bibliotecas para distribución en dispositivos con páginas de 16 KiB queda fuera de este cambio del monitor.
 # Acceso remoto por red (2026-10-20)
 
+La regresión de visualización de conexión se verificó con dos contextos independientes de Chrome: probar un borrador no alteró la URL guardada; guardar actualizó el segundo cliente; cambiar la URL desde otro cliente conservó un borrador abierto; la recarga recuperó la URL persistida. La pantalla Terminal del Samsung también actualizó su etiqueta al cambiar la configuración desde la API. Se restauró el valor inicial y se eliminó la redirección ADB temporal de esta prueba. Registro: `.cache/connection-display-test.log`. Los cuatro READMEs incluyen formatos de conexión, configuración, esquemas y salidas; se validaron sus 18 bloques JSON y enlaces locales.
+
 Se instalaron el servidor actualizado y el cliente independiente en el Samsung SM-S928U autorizado. Desde una PC en la misma Wi-Fi se accedió directamente a `http://192.168.0.118:11435`, sin forward ADB para este puerto.
 
 Pasaron la autenticación obligatoria, rechazo de claves erróneas y origen externo, validación de configuración, igualdad SHA-256 entre el APK servido y el cliente compilado, carga del modelo con la app en segundo plano, repetición del identificador actual sin duplicar la tarea, rechazo de operaciones concurrentes y de cambios con el modelo cargado. Una intención remota consultó el estado real de Windows mediante el fixture SSH existente. Después se liberó el modelo.

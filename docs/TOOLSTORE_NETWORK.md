@@ -10,6 +10,14 @@ No se fija una interfaz Wi-Fi ni se restringen subredes en la app: se utilizan D
 
 El token continúa en la configuración cifrada importada. Los dos destinos deben aceptar ese token; si utilizas otro catálogo con una clave diferente, importa la configuración correspondiente. Importar un JSON actualiza también la dirección del Tool Store. Los ajustes de dirección y reformulación quedan en un archivo privado de `noBackupFilesDir`, sin duplicar el token ni las claves SSH.
 
+## Por qué puede aparecer 127.0.0.1
+
+La dirección visible procede de la configuración guardada, no se fuerza a loopback. En el entorno de desarrollo se guardó `http://127.0.0.1:18000` para usar `adb reverse`. Probar otro destino no sustituye ese valor: hay que pulsar **Guardar**. Importar un JSON antiguo que contenga loopback también vuelve a aplicarlo.
+
+La interfaz muestra ahora **Dirección guardada**, el borrador y los cambios pendientes por separado. El resultado de una prueba incluye la URL que se comprobó y recuerda que probar no guarda. El panel obtiene la dirección actual en cada actualización de estado; un cambio desde Android u otro navegador se refleja sin recargar. Si estás editando un borrador, se conserva y se señala que todavía no está aplicado.
+
+No confundas esa dirección con `target_host` en **Hosts del catálogo**: ese campo indica dónde se ejecuta el script por SSH. Cambiar la dirección del Tool Store no modifica los destinos SSH registrados en cada acción. Consulta los formatos completos en los READMEs de [Android](../app/README.md), [Tool Store](../toolstore/README.md) y [scripts](../remote-scripts/README.md).
+
 ## Configuración del PC
 
 El Tool Store escucha en loopback de forma predeterminada. Para acceder desde otras interfaces del PC, usa una dirección de escucha apropiada y el mismo token configurado en Android:

@@ -22,7 +22,7 @@ private val wire = Json { encodeDefaults = true }
 @Serializable private data class IntentRequest(val query: String, val request_id: String)
 @Serializable private data class EngineRequest(val action: String, val request_id: String)
 @Serializable private data class SettingsResponse(val settings: EngineSettings, val models: List<String>)
-@Serializable private data class StatusResponse(val engine: EngineMonitorState, val terminal: TerminalState, val owner: String?, val job: RemoteJob?, val ram_available_mb: Long, val process_pss_mb: Int)
+@Serializable private data class StatusResponse(val engine: EngineMonitorState, val terminal: TerminalState, val owner: String?, val job: RemoteJob?, val ram_available_mb: Long, val process_pss_mb: Int, val toolstore: ToolStoreSettings)
 private suspend inline fun <reified T> ApplicationCall.json(value: T, status: HttpStatusCode = HttpStatusCode.OK) = respondText(wire.encodeToString(value), ContentType.Application.Json, status)
 private suspend inline fun <reified T> ApplicationCall.body(): T {
     val bytes = receiveChannel().readRemaining(65537).readBytes()
@@ -91,7 +91,7 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
         } }
         get("/remote/status") { call.guarded {
             val memory = android.app.ActivityManager.MemoryInfo().also { context.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it) }
-            call.json(StatusResponse(EngineMonitor.state.value,LiteRTEngineService.state.value,EngineOwnership.owner.value,RemoteJobs.state.value,memory.availMem/1048576,(android.os.Debug.getPss()/1024).toInt()))
+            call.json(StatusResponse(EngineMonitor.state.value,LiteRTEngineService.state.value,EngineOwnership.owner.value,RemoteJobs.state.value,memory.availMem/1048576,(android.os.Debug.getPss()/1024).toInt(),ToolStoreSettingsStore(context).load()))
         } }
         get("/remote/settings") { call.guarded {
             call.json(SettingsResponse(EngineSettingsStore(context).load(),context.getExternalFilesDir(null)?.listFiles()?.filter { it.extension == "litertlm" }?.map { it.path }.orEmpty()))
@@ -112,7 +112,7 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
             val address=ToolStoreEndpoint.normalize(value.url)
             try {
                 withContext(Dispatchers.IO) { ToolStoreClient(ConfigVault(context).load().copy(tool_store_url=address)).probe() }
-                call.json(mapOf("message" to "Conexión autorizada con el Tool Store"))
+                call.json(mapOf("url" to address,"message" to "Conexión autorizada con $address"))
             } catch(e: java.io.IOException) {
                 call.json(mapOf("error" to "No se pudo conectar al Tool Store. Revisa IP, puerto y rutas LAN/VPN."),HttpStatusCode.ServiceUnavailable)
             }

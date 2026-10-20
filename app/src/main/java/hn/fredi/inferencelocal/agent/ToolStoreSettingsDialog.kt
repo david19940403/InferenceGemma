@@ -15,6 +15,9 @@ import kotlinx.coroutines.*
     val scope = rememberCoroutineScope()
     val store = remember { ToolStoreSettingsStore(context) }
     val current = remember { store.load() }
+    val changes by ToolStoreSettingsStore.changes.collectAsState()
+    val saved = changes ?: current
+    var editing by remember { mutableStateOf(false) }
     var url by remember { mutableStateOf(current.url) }
     var rewrite by remember { mutableStateOf(current.rewriteSearch) }
     var testing by remember { mutableStateOf(false) }
@@ -23,27 +26,31 @@ import kotlinx.coroutines.*
     val runtime by EngineMonitor.state.collectAsState()
     val job by hn.fredi.inferencelocal.remote.RemoteJobs.state.collectAsState()
     val locked = terminal.busy || runtime.busy || job?.status == "queued"
+    val pending = url.trim().trimEnd('/') != saved.url || rewrite != saved.rewriteSearch
+    LaunchedEffect(saved) { if(!editing) {url=saved.url;rewrite=saved.rewriteSearch} }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Tool Store en la red") }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Indica la dirección del PC que ejecuta el catálogo. Se usará la LAN o VPN activa, sin fijar una interfaz.")
-            OutlinedTextField(url, { url=it;message="" }, label={Text("Dirección HTTP(S) y puerto")}, placeholder={Text("http://10.12.14.1:8000")}, singleLine=true, enabled=!locked && !testing,modifier=Modifier.fillMaxWidth())
+            Text("Dirección guardada: ${saved.url.ifBlank { "Sin dirección" }}",style=MaterialTheme.typography.bodySmall)
+            OutlinedTextField(url, { url=it;editing=true;message="" }, label={Text("Dirección HTTP(S) y puerto")}, placeholder={Text("http://10.12.14.1:8000")}, singleLine=true, enabled=!locked && !testing,modifier=Modifier.fillMaxWidth())
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled=!locked && !testing,onClick={url=ToolStoreEndpoint.preset(url,"10.12.14.1");message=""}) {Text("10.12.14.1")}
-                OutlinedButton(enabled=!locked && !testing,onClick={url=ToolStoreEndpoint.preset(url,"192.168.9.1");message=""}) {Text("192.168.9.1")}
+                OutlinedButton(enabled=!locked && !testing,onClick={url=ToolStoreEndpoint.preset(url,"10.12.14.1");editing=true;message=""}) {Text("10.12.14.1")}
+                OutlinedButton(enabled=!locked && !testing,onClick={url=ToolStoreEndpoint.preset(url,"192.168.9.1");editing=true;message=""}) {Text("192.168.9.1")}
             }
             Text("Usa la IP del PC, sin /24. Conserva el puerto correcto; el habitual es 8000. El token sigue siendo el importado con la configuración SSH.",style=MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                Switch(rewrite,{rewrite=it},enabled=!locked && !testing)
+                Switch(rewrite,{rewrite=it;editing=true},enabled=!locked && !testing)
                 Text("Reformular la búsqueda si no encuentra herramientas",Modifier.weight(1f))
             }
             Text("Hasta dos intentos con LiteRT. Las palabras alternativas solo se usan para buscar: no cambian la instrucción ni los argumentos de ejecución.",style=MaterialTheme.typography.bodySmall)
+            if(pending) Text("Cambios sin guardar. La próxima intención seguirá usando la dirección guardada.",color=MaterialTheme.colorScheme.primary)
             OutlinedButton(enabled=!testing,onClick={
                 scope.launch {
                     testing=true;message="Probando conexión…"
                     try {
                         val address=ToolStoreEndpoint.normalize(url)
                         withContext(Dispatchers.IO) { ToolStoreClient(ConfigVault(context).load().copy(tool_store_url=address)).probe() }
-                        message="Conexión autorizada con el Tool Store"
+                        message="Última prueba correcta: $address. Probar no guarda la dirección; pulsa Guardar para aplicarla."
                     } catch(e: CancellationException) {throw e}
                     catch(e: Exception) {message=e.message ?: "No se pudo conectar"}
                     finally {testing=false}
