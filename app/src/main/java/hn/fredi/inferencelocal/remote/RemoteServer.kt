@@ -101,6 +101,22 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
             withContext(Dispatchers.Main) { EngineSettingsStore(context).save(value) }
             call.json(value)
         } }
+        get("/remote/toolstore") { call.guarded { call.json(ToolStoreSettingsStore(context).load()) } }
+        put("/remote/toolstore") { call.guarded {
+            val value=call.body<ToolStoreSettings>()
+            withContext(Dispatchers.Main) { ToolStoreSettingsStore(context).save(value) }
+            call.json(ToolStoreSettingsStore(context).load())
+        } }
+        post("/remote/toolstore/test") { call.guarded {
+            val value=call.body<ToolStoreSettings>()
+            val address=ToolStoreEndpoint.normalize(value.url)
+            try {
+                withContext(Dispatchers.IO) { ToolStoreClient(ConfigVault(context).load().copy(tool_store_url=address)).probe() }
+                call.json(mapOf("message" to "Conexión autorizada con el Tool Store"))
+            } catch(e: java.io.IOException) {
+                call.json(mapOf("error" to "No se pudo conectar al Tool Store. Revisa IP, puerto y rutas LAN/VPN."),HttpStatusCode.ServiceUnavailable)
+            }
+        } }
         post("/remote/intents") { call.guarded { val request = call.body<IntentRequest>(); call.json(submit("intent",request.query,request.request_id),HttpStatusCode.Accepted) } }
         post("/remote/engine") { call.guarded {
             val request = call.body<EngineRequest>();require(request.action in listOf("load","unload")) { "Acción inválida" }

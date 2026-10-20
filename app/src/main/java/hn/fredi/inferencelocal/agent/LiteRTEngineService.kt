@@ -71,11 +71,15 @@ class LiteRTEngineService : Service() {
                         val config = ConfigVault(this@LiteRTEngineService).load()
                         val localEngine = getEngine()
                         val connections = SSHConnectionPool(config).also { pool = it }
-                        val worker = AgenticLoopWorker(ToolStoreClient(config)::search, localEngine, ToolExecutor(connections::execute), config.hosts) { progress ->
+                        val network = ToolStoreSettingsStore(this@LiteRTEngineService).load()
+                        val catalog = ToolStoreClient(config.copy(tool_store_url = network.url.ifBlank { config.tool_store_url }))
+                        val onProgress: (String) -> Unit = { progress ->
                             mutableState.value = mutableState.value.copy(message = progress)
                             EngineMonitor.update { it.copy(message = progress) }
                             RemoteJobs.progress(remoteId, progress)
                         }
+                        val resolver = ToolSearchResolver(catalog::search, localEngine, network.rewriteSearch, onProgress)
+                        val worker = AgenticLoopWorker(resolver::find, localEngine, ToolExecutor(connections::execute), config.hosts, onProgress)
                         result = withTimeout(300000) { worker.processUserIntent(query) }
                         message = "Transacción finalizada"
                     }

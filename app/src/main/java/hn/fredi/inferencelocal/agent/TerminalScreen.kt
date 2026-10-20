@@ -36,6 +36,9 @@ fun TerminalScreen() {
     var query by rememberSaveable { mutableStateOf("") }
     var configStatus by remember { mutableStateOf(runCatching { ConfigVault(context).load().let { "${it.hosts.size} hosts · ${EngineSettingsStore(context).load().backend}" } }.getOrDefault("Sin configuración")) }
     var importing by remember { mutableStateOf(false) }
+    var showToolStore by remember { mutableStateOf(false) }
+    var toolStoreUrl by remember { mutableStateOf(ToolStoreSettingsStore(context).load().url) }
+    val networkChanges by ToolStoreSettingsStore.changes.collectAsState()
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             importing = true
@@ -46,14 +49,18 @@ fun TerminalScreen() {
                 }
             } catch (e: Exception) { e.message ?: "Configuración inválida" }
             importing = false
+            toolStoreUrl = ToolStoreSettingsStore(context).load().url
         }
     }
+    if(showToolStore) ToolStoreSettingsDialog(onDismiss={showToolStore=false},onSaved={toolStoreUrl=it.url;showToolStore=false})
     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Text("Terminal SSH", style = MaterialTheme.typography.headlineSmall)
         Text("Una intención. Una transacción.", color = MaterialTheme.colorScheme.primary)
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(configStatus)
+                Text("Tool Store: ${(networkChanges?.url ?: toolStoreUrl).ifBlank { "Sin dirección" }}",style=MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick={showToolStore=true},enabled=!importing) {Text("Configurar Tool Store")}
                 OutlinedButton(onClick = { importer.launch(arrayOf("application/json", "text/*", "application/octet-stream")) }, enabled = !state.busy && !runtime.busy && !runtime.modelLoaded && !importing) { Text(if (importing) "Importando…" else "Importar configuración JSON") }
                 Text("LiteRT-LM local · Go · SSH con claves de host verificadas", style = MaterialTheme.typography.bodySmall)
             }

@@ -94,6 +94,8 @@ La decodificación restringida depende del modelo y del runtime. Si no se obtien
 
 Para usar el Android como servidor desde otro equipo, consulta [Acceso remoto y cliente Android](REMOTE_ACCESS.md). La pestaña **Red** publica la interfaz web y permite obtener el APK cliente sin modelo.
 
+La dirección del catálogo se cambia en **Terminal → Configurar Tool Store**, con accesos rápidos para LAN/VPN y reformulación opcional de búsquedas vacías. Consulta [Tool Store en la red](TOOLSTORE_NETWORK.md).
+
 Requiere JDK 17+, SDK Android 36 y acceso a las dependencias Gradle.
 
 ```powershell

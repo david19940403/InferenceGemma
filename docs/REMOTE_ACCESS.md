@@ -19,6 +19,7 @@ El servidor permanece como servicio foreground mientras está habilitado, inclus
 - Consultar progreso, resultado, backend, estado, TPS, TTFT y RAM.
 - Cargar, liberar y cancelar operaciones del engine de la terminal.
 - Cambiar modelo, backend, contexto, muestreo y RAM mínima con el modelo liberado.
+- Configurar la dirección del Tool Store, probar conexión y activar la reformulación de búsquedas vacías; consulta [LAN/VPN y búsquedas](TOOLSTORE_NETWORK.md).
 - Mantener una única operación activa entre los clientes y la terminal local. El servidor API original conserva la exclusión del modelo nativo.
 
 El cliente usa una cookie HttpOnly, SameSite Strict, con duración de ocho horas. La clave no se guarda en localStorage ni se incluye en enlaces. La configuración de red se cifra con Android Keystore. Al detener/reiniciar el servicio se invalidan las sesiones; generar otra clave requiere detenerlo primero. No se importan ni se devuelven claves SSH a través de esta interfaz.
