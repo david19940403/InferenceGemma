@@ -59,7 +59,7 @@ Error: exit distinto de `0`, un objeto JSON en stderr:
 
 ## Compilación y documentación
 
-Hay un paquete de [siete tools diarias para esta PC](docs/DAILY_PC_TOOLS.md): VPN, Git, ADB, servicios, imágenes de productos, validación n8n y APK recientes. El [catálogo importable](examples/daily-tools.windows.json) usa parámetros enumerados y configuración de rutas privada.
+El catálogo Go permite registrar acciones remotas con parámetros validados y recuperarlas mediante búsqueda semántica ligera. Los ejemplos incluidos son genéricos y no contienen rutas ni referencias a otros proyectos.
 
 ```powershell
 .\gradlew.bat :app:assembleDebug :client:assembleDebug :app:testDebugUnitTest

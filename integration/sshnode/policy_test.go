@@ -27,7 +27,6 @@ func TestResolvesOnlyFixedScriptsAndIPArguments(t *testing.T) {
 		}
 	}
 }
-
 func TestKeepsPinnedHostIdentityAndClientCredentialsOnRestart(t *testing.T) {
 	dir := t.TempDir()
 	_, firstKey, err := ed25519.GenerateKey(rand.Reader)
@@ -58,21 +57,5 @@ func TestKeepsPinnedHostIdentityAndClientCredentialsOnRestart(t *testing.T) {
 	}
 	if key != "existing-test-identity" || token != "existing-test-token" {
 		t.Fatal("client credentials rotated unexpectedly")
-	}
-}
-
-func TestDailyToolsAreLimitedToApprovedActionsAndAliases(t *testing.T) {
-	status := filepath.Join(t.TempDir(), "system_status.ps1")
-	daily := filepath.Join(filepath.Dir(status), "daily-tools.ps1")
-	for _, args := range [][]string{{"vpn"}, {"adb"}, {"servicios"}, {"git", "scanflex"}, {"git", "prestashop"}, {"apks", "inferencegemma"}, {"imagenes", "productos"}, {"n8n", "aperturas_takepos"}} {
-		script, actual, ok := resolve(command(daily, args...), status, "ping.ps1")
-		if !ok || script != daily || len(actual) != len(args) {
-			t.Fatal("Approved tool rejected")
-		}
-	}
-	for _, args := range [][]string{{"delete"}, {"git", "C:\\"}, {"git", "scanflex", "extra"}, {"imagenes", "../private"}, {"vpn", "extra"}, {"n8n", "unknown"}} {
-		if _, _, ok := resolve(command(daily, args...), status, "ping.ps1"); ok {
-			t.Fatal("Unapproved daily command accepted")
-		}
 	}
 }

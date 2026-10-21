@@ -30,24 +30,6 @@ func resolve(wire, statusScript, pingScript string) (string, []string, bool) {
 	if wire == command(statusScript) {
 		return statusScript, nil, true
 	}
-	daily := filepath.Join(filepath.Dir(statusScript), "daily-tools.ps1")
-	approved := map[string][]string{
-		"vpn": {""}, "adb": {""}, "servicios": {""},
-		"git":      {"inferencegemma", "scanflex", "posandroid", "prestashop"},
-		"apks":     {"inferencegemma", "scanflex", "posandroid"},
-		"imagenes": {"productos"}, "n8n": {"aperturas_takepos"},
-	}
-	for action, subjects := range approved {
-		for _, subject := range subjects {
-			args := []string{action}
-			if subject != "" {
-				args = append(args, subject)
-			}
-			if wire == command(daily, args...) {
-				return daily, args, true
-			}
-		}
-	}
 	if !strings.HasPrefix(wire, commandPrefix) {
 		return "", nil, false
 	}
