@@ -1,0 +1,497 @@
+[
+  {
+    "name": "windows_disk_space",
+    "description": "Espacio libre de discos Windows almacenamiento unidades capacidad disco lleno",
+    "script": "disks.ps1",
+    "arguments": [],
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
+    "name": "windows_network_adapters",
+    "description": "Interfaces de red Windows IP adaptadores VPN gateway rutas de conexion",
+    "script": "network.ps1",
+    "arguments": [
+      "adapters"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
+    "name": "network_ping",
+    "description": "Ping comprobar si responde un equipo IP destino latencia conectividad red",
+    "script": "network.ps1",
+    "arguments": [
+      "ping",
+      "{target}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "IP o nombre DNS"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "network_tcp_port",
+    "description": "Probar puerto TCP abierto accesible conexion de un servidor equipo servicio red",
+    "script": "network.ps1",
+    "arguments": [
+      "tcp",
+      "{target}",
+      "{port}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "IP o nombre DNS"
+        },
+        "port": {
+          "type": "string",
+          "description": "Puerto TCP 1 a 65535",
+          "default": "443"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "network_dns_lookup",
+    "description": "Resolver nombre DNS dominio hostname direcciones IP resolucion DNS",
+    "script": "network.ps1",
+    "arguments": [
+      "dns",
+      "{target}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Nombre DNS o direccion IP"
+        }
+      },
+      "required": [
+        "target"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "windows_process_list",
+    "description": "Ver procesos programas ejecutandose consumo memoria RAM PID buscar proceso",
+    "script": "processes.ps1",
+    "arguments": [
+      "list",
+      "{filter}",
+      "{limit}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "string",
+          "description": "Parte del nombre del proceso; vacio lista por RAM",
+          "default": ""
+        },
+        "limit": {
+          "type": "string",
+          "description": "Maximo de resultados",
+          "default": "5"
+        }
+      },
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
+    "name": "windows_process_stop",
+    "description": "Detener cerrar terminar proceso programa por PID exacto de tu cuenta; requiere peticion explicita de cierre",
+    "script": "processes.ps1",
+    "arguments": [
+      "stop",
+      "{pid}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "string",
+          "description": "PID numerico obtenido de windows_process_list"
+        }
+      },
+      "required": [
+        "pid"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "windows_service_list",
+    "description": "Consultar buscar servicios Windows estado running stopped nombre del servicio",
+    "script": "services.ps1",
+    "arguments": [
+      "list",
+      "{filter}",
+      "{limit}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "type": "string",
+          "description": "Parte del nombre del servicio; vacio lista servicios",
+          "default": ""
+        },
+        "limit": {
+          "type": "string",
+          "description": "Maximo de resultados",
+          "default": "5"
+        }
+      },
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
+    "name": "windows_service_control",
+    "description": "Iniciar inicia arrancar detener para reiniciar reinicia un servicio Windows por nombre exacto; requiere peticion explicita",
+    "script": "services.ps1",
+    "arguments": [
+      "{action}",
+      "{service}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "Operacion solicitada",
+          "enum": [
+            "start",
+            "stop",
+            "restart"
+          ]
+        },
+        "service": {
+          "type": "string",
+          "description": "Nombre exacto obtenido de windows_service_list"
+        }
+      },
+      "required": [
+        "action",
+        "service"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "windows_event_errors",
+    "description": "Consultar errores advertencias eventos recientes registros Windows System Application diagnostico fallos",
+    "script": "events.ps1",
+    "arguments": [
+      "{log}",
+      "{hours}",
+      "{limit}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "log": {
+          "type": "string",
+          "description": "Registro de eventos",
+          "default": "System",
+          "enum": [
+            "System",
+            "Application"
+          ]
+        },
+        "hours": {
+          "type": "string",
+          "description": "Horas anteriores, 1 a 168",
+          "default": "24"
+        },
+        "limit": {
+          "type": "string",
+          "description": "Maximo de eventos, 1 a 10",
+          "default": "3"
+        }
+      },
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
+    "name": "files_list",
+    "description": "Listar lista mostrar muestra archivos carpetas contenido directorio ruta Windows documentos escritorio descargas",
+    "script": "files.ps1",
+    "arguments": [
+      "list",
+      "{path}",
+      "_",
+      "{limit}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta absoluta de carpeta local"
+        },
+        "limit": {
+          "type": "string",
+          "description": "Maximo de resultados",
+          "default": "5"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "files_read_text",
+    "description": "Leer ver contenido archivo texto documento por ruta Windows lectura txt log csv",
+    "script": "files.ps1",
+    "arguments": [
+      "read",
+      "{path}",
+      "_",
+      "{characters}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta absoluta de archivo de texto"
+        },
+        "characters": {
+          "type": "string",
+          "description": "Maximo de caracteres 1 a 2000; respuesta breve",
+          "default": "250"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "files_find_name",
+    "description": "Buscar busca encontrar encuentra localizar archivo carpeta por parte del nombre dentro de una carpeta Windows",
+    "script": "files.ps1",
+    "arguments": [
+      "find",
+      "{path}",
+      "{name}",
+      "{limit}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Carpeta absoluta donde buscar"
+        },
+        "name": {
+          "type": "string",
+          "description": "Parte del nombre; busqueda literal, hasta 4 niveles"
+        },
+        "limit": {
+          "type": "string",
+          "description": "Maximo de resultados",
+          "default": "5"
+        }
+      },
+      "required": [
+        "path",
+        "name"
+      ]
+    },
+    "effect": "read"
+  },
+  {
+    "name": "files_create_directory",
+    "description": "Crear crea nueva carpeta directorio nuevo Windows en ruta solicitada",
+    "script": "files.ps1",
+    "arguments": [
+      "mkdir",
+      "{path}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta absoluta de nueva carpeta"
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "files_create_text",
+    "description": "Crear archivo texto nuevo escribir guardar nota contenido texto sin sobrescribir existentes",
+    "script": "files.ps1",
+    "arguments": [
+      "write",
+      "{path}",
+      "{text}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo nuevo"
+        },
+        "text": {
+          "type": "string",
+          "description": "Contenido texto hasta 2048 bytes"
+        }
+      },
+      "required": [
+        "path",
+        "text"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "files_append_text",
+    "description": "Agregar anadir texto al final de archivo existente sin reemplazar contenido",
+    "script": "files.ps1",
+    "arguments": [
+      "append",
+      "{path}",
+      "{text}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo"
+        },
+        "text": {
+          "type": "string",
+          "description": "Texto que se agregara al final, hasta 2048 bytes"
+        }
+      },
+      "required": [
+        "path",
+        "text"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "files_copy",
+    "description": "Copiar duplicar archivo Windows desde origen a destino nuevo sin sobrescribir",
+    "script": "files.ps1",
+    "arguments": [
+      "copy",
+      "{source}",
+      "{destination}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo existente"
+        },
+        "destination": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo destino nuevo"
+        }
+      },
+      "required": [
+        "source",
+        "destination"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "files_move",
+    "description": "Mover renombrar cambiar nombre de archivo Windows sin sobrescribir destino",
+    "script": "files.ps1",
+    "arguments": [
+      "move",
+      "{source}",
+      "{destination}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo existente"
+        },
+        "destination": {
+          "type": "string",
+          "description": "Ruta absoluta del archivo destino nuevo"
+        }
+      },
+      "required": [
+        "source",
+        "destination"
+      ]
+    },
+    "effect": "write"
+  },
+  {
+    "name": "windows_open_application",
+    "description": "Abrir iniciar programa aplicacion en escritorio Windows: bloc de notas calculadora explorador administrador de tareas",
+    "script": "desktop-open.ps1",
+    "arguments": [
+      "{app}"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "app": {
+          "type": "string",
+          "description": "Aplicacion solicitada",
+          "enum": [
+            "notepad",
+            "calculator",
+            "explorer",
+            "taskmanager"
+          ]
+        }
+      },
+      "required": [
+        "app"
+      ]
+    },
+    "effect": "write"
+  }
+]

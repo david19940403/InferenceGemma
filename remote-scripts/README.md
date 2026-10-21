@@ -1,5 +1,7 @@
 # Tools por SSH: entradas, plantillas y salidas
 
+Catalogo inicial de esta PC: [herramientas Windows y ejemplos](../docs/WINDOWS_CATALOG.md).
+
 Consulta también la [configuración general](../docs/SETUP.md) para preparar el nodo Windows y el acceso SSH.
 
 Una tool es un script instalado en un nodo SSH. El catálogo guarda su nombre, descripción, host, ruta y esquema de entradas. Android recupera la descripción, genera argumentos validados y abre SSH usando su configuración privada.
