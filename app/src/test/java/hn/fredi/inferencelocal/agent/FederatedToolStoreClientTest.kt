@@ -41,7 +41,8 @@ class FederatedToolStoreClientTest {
     }
     @Test fun globalBudgetAndInvalidConfiguration() {
         val tools=(1..9).map { "s$it" to tool().copy(name="tool_$it") }
-        assertEquals(3,FederatedToolStoreClient.merge("red",tools).size)
+        assertEquals(9,FederatedToolStoreClient.merge("red",tools).size)
+        assertEquals(32,FederatedToolStoreClient.merge("red",(1..50).map { "s$it" to tool().copy(name="tool_$it") }).size)
         try { ToolStoreSettings("http://pc:80",stores=listOf(ToolStoreNode("other","Other","http://PC"))).normalized();fail() } catch(_:IllegalArgumentException){}
         try { ToolStoreSettings("http://pc",primaryEnabled=false).normalized();fail() } catch(_:IllegalArgumentException){}
     }

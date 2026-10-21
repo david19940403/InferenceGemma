@@ -1,0 +1,10 @@
+{
+  "modelPath": "/storage/emulated/0/Android/data/hn.fredi.inferencelocal/files/gemma-4-E4B-it.litertlm",
+  "backend": "GPU",
+  "contextTokens": 4096,
+  "temperature": 0.0,
+  "topK": 1,
+  "topP": 1.0,
+  "minAvailableRamMb": 512,
+  "toolBudgetTokens": 1500
+}

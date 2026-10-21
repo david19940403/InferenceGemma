@@ -7,7 +7,11 @@ class EngineSettingsTest {
     private val valid = EngineSettings(modelPath = "/models/gemma.litertlm")
     @Test fun validatesRuntimeLimits() {
         valid.validate()
-        listOf(valid.copy(contextTokens = 2048), valid.copy(contextTokens = 0), valid.copy(topK = 0),
+        valid.copy(contextTokens = 2048).validate()
+        assertEquals(4096, valid.contextTokens)
+        assertEquals(1500, valid.toolBudgetTokens)
+        listOf(valid.copy(contextTokens = 4097), valid.copy(contextTokens = 0), valid.copy(topK = 0),
+            valid.copy(toolBudgetTokens = 0), valid.copy(toolBudgetTokens = 2049),
             valid.copy(temperature = Double.NaN), valid.copy(topP = 0.0), valid.copy(backend = "AUTO"),
             valid.copy(minAvailableRamMb = 1), valid.copy(modelPath = "model.gguf")).forEach { invalid ->
             assertThrows(IllegalArgumentException::class.java) { invalid.validate() }

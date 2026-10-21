@@ -41,7 +41,12 @@ object GuidedDecodingValidator {
             require(call.keys == setOf("name", "arguments"))
             val tool = tools.singleOrNull { it.name == call.getValue("name").jsonPrimitive.content }
                 ?: error("Herramienta fuera del catálogo recuperado")
-            arguments(tool, call.getValue("arguments").jsonObject)
+            if (tool.name == ToolCatalogBudget.SEARCH && tool.transport.type == "internal") {
+                val args = call.getValue("arguments").jsonObject
+                require(args.keys == setOf("query")) { "La búsqueda requiere solo query" }
+                val query = args.getValue("query").jsonPrimitive
+                require(query.isString && query.content.isNotBlank() && query.content.toByteArray().size <= 512 && query.content.none { it.isISOControl() }) { "Consulta de herramientas inválida" }
+            } else arguments(tool, call.getValue("arguments").jsonObject)
         }
         return obj
     }

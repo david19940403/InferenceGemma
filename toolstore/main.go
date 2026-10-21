@@ -392,8 +392,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	if req.TopK == 0 {
 		req.TopK = 3
 	}
-	if req.TopK < 1 || req.TopK > 3 {
-		problem(w, 400, errors.New("top_k debe estar entre 1 y 3"))
+	if req.TopK < 1 || req.TopK > 16 {
+		problem(w, 400, errors.New("top_k debe estar entre 1 y 16"))
 		return
 	}
 	tools, err := s.allTools()
@@ -528,7 +528,7 @@ func validate(t Tool) error {
 		return err
 	}
 	nameRE := regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-	if !nameRE.MatchString(t.Name) || t.Name == "finish_transaction" || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.:-]{0,252}$`).MatchString(t.TargetHost) || len(t.Description) > 1000 || len(t.CommandTemplate) > 2000 {
+	if !nameRE.MatchString(t.Name) || t.Name == "finish_transaction" || t.Name == "search_tools" || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.:-]{0,252}$`).MatchString(t.TargetHost) || len(t.Description) > 1000 || len(t.CommandTemplate) > 2000 {
 		return errors.New("nombre, host, descripción o plantilla inválidos")
 	}
 	if t.Parameters["type"] != "object" {

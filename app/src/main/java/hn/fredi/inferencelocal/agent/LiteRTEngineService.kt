@@ -79,7 +79,9 @@ class LiteRTEngineService : Service() {
                             RemoteJobs.progress(remoteId, progress)
                         }
                         val resolver = ToolSearchResolver(catalog::search, localEngine, network.rewriteSearch, onProgress)
-                        val worker = AgenticLoopWorker(resolver::find, localEngine, ToolExecutor(connections::execute), config.hosts, onProgress)
+                        val settings = EngineSettingsStore(this@LiteRTEngineService).load()
+                        val worker = AgenticLoopWorker(resolver::find, localEngine, ToolExecutor(connections::execute), config.hosts, onProgress,
+                            settings.contextTokens, settings.toolBudgetTokens, catalog::search)
                         result = withTimeout(300000) { worker.processUserIntent(query) }
                         message = "Transacción finalizada"
                     }

@@ -90,7 +90,7 @@ El índice compara palabras de nombre, descripción y host, con normalización d
 | GET | `/healthz` | Salud e índice; no comprueba SSH. |
 | GET/POST | `/api/tools` | Listar / crear. |
 | PUT/DELETE | `/api/tools/{id}` | Editar / eliminar. |
-| POST | `/tools/search` | Recuperar hasta tres acciones. |
+| POST | `/tools/search` | Recuperar hasta 16 acciones (`top_k` 1–16; omitido: 3). |
 
 [Esquemas de parámetros, plantillas y salidas](../remote-scripts/README.md) · [Administrador](../docs/ADMIN.md) · [Configuración Android](../app/README.md)
 

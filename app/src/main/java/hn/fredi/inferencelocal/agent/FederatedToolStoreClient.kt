@@ -58,7 +58,7 @@ class FederatedToolStoreClient(
                 .replace(Regex("\\p{M}"), "").split(Regex("[^a-z0-9]+" )).filter { it.length > 1 }.toSet()
             val terms = words(query)
             return unique.sortedByDescending { (_, t) -> words(t.name + " " + t.description + " " + t.transport.target_host).intersect(terms).size }
-                .take(3).map { (id, tool) ->
+                .take(32).map { (id, tool) ->
                     if(collisions.getValue(tool.name) == 1) tool
                     else {
                         val hash = MessageDigest.getInstance("SHA-256").digest((tool.transport.toString() + tool.parameters).toByteArray())

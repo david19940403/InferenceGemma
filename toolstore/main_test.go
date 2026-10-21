@@ -3,11 +3,45 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestExpandedSearchAndInternalNames(t *testing.T) {
+	s, err := openStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	h := s.routes()
+	for i := 0; i < 10; i++ {
+		body := fmt.Sprintf(`{"name":"status_%d","description":"windows status memory","target_host":"pc","command_template":"status.ps1","parameters":{"type":"object","properties":{}}}`, i)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/api/tools", strings.NewReader(body)))
+		if w.Code != 201 {
+			t.Fatalf("create: %d %s", w.Code, w.Body)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/tools/search", strings.NewReader(`{"query":"windows","top_k":16}`)))
+	var result struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result.Tools) != 10 {
+		t.Fatalf("expanded: %d %s", w.Code, w.Body)
+	}
+	for _, name := range []string{"search_tools", "finish_transaction"} {
+		body := fmt.Sprintf(`{"name":"%s","description":"reserved","target_host":"pc","command_template":"status.ps1","parameters":{"type":"object","properties":{}}}`, name)
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("POST", "/api/tools", strings.NewReader(body)))
+		if w.Code != 400 {
+			t.Fatalf("reserved accepted: %s %d", name, w.Code)
+		}
+	}
+}
 
 func TestCatalogLifecycle(t *testing.T) {
 	s, e := openStore(":memory:")
@@ -34,7 +68,7 @@ func TestCatalogLifecycle(t *testing.T) {
 	if w := call("POST", "/tools/search", `{"query":"zzzzzzz"}`); w.Body.String() != "{\"tools\":[]}\n" {
 		t.Fatal(w.Body)
 	}
-	if w := call("POST", "/tools/search", `{"query":"fedora","top_k":4}`); w.Code != 400 {
+	if w := call("POST", "/tools/search", `{"query":"fedora","top_k":17}`); w.Code != 400 {
 		t.Fatal(w.Code)
 	}
 	if w := call("POST", "/api/tools", body+body); w.Code != 400 {

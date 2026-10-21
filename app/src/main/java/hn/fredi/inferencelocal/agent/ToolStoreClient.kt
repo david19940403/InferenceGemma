@@ -17,14 +17,14 @@ class ToolStoreClient(private val config: AgentConfig) {
             conn.setRequestProperty("Content-Type", "application/json")
             if (config.token.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer ${config.token}")
             conn.doOutput = true
-            conn.outputStream.use { it.write(buildJsonObject { put("query", query); put("top_k", 3) }.toString().toByteArray()) }
+            conn.outputStream.use { it.write(buildJsonObject { put("query", query); put("top_k", 16) }.toString().toByteArray()) }
             check(conn.responseCode == 200) { when(conn.responseCode) {
                 401,403 -> "Tool Store rechazó el token importado (HTTP ${conn.responseCode})"
                 else -> "Tool Store respondió HTTP ${conn.responseCode}"
             } }
             val bytes = conn.inputStream.use { it.readBytesBounded(64 * 1024) }
             Json { ignoreUnknownKeys = true }.decodeFromString<SearchResponse>(bytes.toString(Charsets.UTF_8)).tools.also {
-                require(it.all { t -> t.name.matches(Regex("[a-z][a-z0-9_]{0,63}")) && t.name != "finish_transaction" } && it.size <= 3 && it.map { t -> t.name }.distinct().size == it.size)
+                require(it.all { t -> t.name.matches(Regex("[a-z][a-z0-9_]{0,63}")) && t.name !in ToolCatalogBudget.reservedNames } && it.size <= 16 && it.map { t -> t.name }.distinct().size == it.size)
                 require(it.all { t -> t.transport.type == "ssh" && config.hosts.any { h -> h.host == t.transport.target_host } }) { "Catálogo con hosts no autorizados" }
             }
         } finally { conn.disconnect() }

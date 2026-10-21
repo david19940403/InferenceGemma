@@ -70,18 +70,18 @@ Los scripts emiten un objeto JSON por stdout al terminar correctamente. Ante fal
 
 `backend` acepta `NPU`, `GPU` y `CPU`. NPU requiere un modelo compatible con el chip y las bibliotecas Qualcomm correspondientes. Ante un fallo NPU, selecciona GPU/CPU explícitamente: no hay fallback silencioso. Detén el servidor de la pestaña Motor antes de usar la terminal para evitar cargar dos modelos.
 
-En **Motor → Engine terminal** puedes supervisar y configurar el modelo que usa la terminal. Ajusta ruta/modelo, backend, contexto (512–1984), temperatura, Top K, Top P y RAM mínima; guarda y pulsa **Cargar modelo**. La carga manual lo mantiene disponible entre intenciones hasta pulsar **Liberar modelo**. Sin carga manual, cada intención libera su modelo al terminar. La configuración se guarda en el almacenamiento privado y se utiliza realmente al crear el engine. Los cambios se bloquean mientras el modelo está cargado o hay una tarea activa. **Motor → Servidor API** conserva el monitor anterior para Ollama/OpenAI. Los dos servicios comparten una reserva de acelerador y no permiten cargar modelos simultáneamente.
+En **Motor → Engine terminal** puedes supervisar y configurar el modelo que usa la terminal. Ajusta ruta/modelo, backend, contexto (512–4096), presupuesto de tools (1500 tokens estimados por defecto), temperatura, Top K, Top P y RAM mínima; guarda y pulsa **Cargar modelo**. La carga manual lo mantiene disponible entre intenciones hasta pulsar **Liberar modelo**. Sin carga manual, cada intención libera su modelo al terminar. La configuración se guarda en el almacenamiento privado y se utiliza realmente al crear el engine. Los cambios se bloquean mientras el modelo está cargado o hay una tarea activa. **Motor → Servidor API** conserva el monitor anterior para Ollama/OpenAI. Los dos servicios comparten una reserva de acelerador y no permiten cargar modelos simultáneamente.
 
 El monitor de la terminal muestra estado, modelo y backend activos, contexto exacto, tiempo de carga, tokens de entrada/salida, evaluaciones, velocidad y TTFT del benchmark nativo, RAM JVM, RAM disponible y PSS del proceso. Los datos de la última inferencia permanecen visibles al liberar el modelo; no son estimaciones de tokens a partir de caracteres.
 
 ## Ejecución y límites
 
-La terminal recupera hasta tres herramientas, crea una conversación nueva por evaluación y usa `OpenApiTool` con decodificación restringida y ejecución automática desactivada. Revalida nombre, tipos string, enum, campos requeridos, argumentos desconocidos y placeholders antes de SSH. Solo permite hosts autorizados y exige claves de host conocidas. La decisión final usa internamente `finish_transaction`.
+La terminal recupera hasta 16 candidatos por catálogo y selecciona herramientas por presupuesto de tokens; crea una conversación nueva por evaluación y usa `OpenApiTool` con decodificación restringida y ejecución automática desactivada. Revalida nombre, tipos string, enum, campos requeridos, argumentos desconocidos y placeholders antes de SSH. Solo permite hosts autorizados y exige claves de host conocidas. La decisión final usa internamente `finish_transaction`.
 
 Los resultados y códigos SSH se incorporan a la siguiente evaluación como datos. No hay historial persistente entre intenciones; solo el resultado visible permanece en memoria hasta la siguiente instrucción.
 
-- Contexto nativo: 1984 tokens por defecto, configurable entre 512 y 1984. El límite previo por bytes evita catálogos enormes, pero no sustituye al tokenizador; el runtime puede rechazar un prompt que exceda el contexto.
-- Cuatro evaluaciones y hasta tres ejecuciones; el último paso se reserva para responder.
+- Contexto nativo: 4096 tokens por defecto, configurable entre 512 y 4096. Presupuesto de herramientas: 1500 tokens estimados por defecto (`toolBudgetTokens`). Se reservan tokens para instrucciones, resultados y generación. La estimación no sustituye al tokenizador nativo.
+- Siete evaluaciones, hasta tres búsquedas adicionales con `search_tools` y tres ejecuciones; el último paso se reserva para responder.
 - Se bloquean ejecuciones idénticas repetidas en la misma transacción. Si el modelo vuelve a proponer una ya realizada, el siguiente paso permite solo responder usando los resultados existentes.
 - SSH: conexión 5 s, ejecución 120 s, salida combinada hasta 32 KiB.
 - Transacción: 300 s. El contexto conserva hasta 400 caracteres por resultado, marcando truncamientos.

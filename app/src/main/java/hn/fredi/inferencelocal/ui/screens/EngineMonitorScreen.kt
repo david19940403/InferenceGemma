@@ -32,6 +32,7 @@ fun EngineMonitorScreen() {
     var model by rememberSaveable { mutableStateOf(saved.modelPath) }
     var backend by rememberSaveable { mutableStateOf(saved.backend) }
     var numCtx by rememberSaveable { mutableStateOf(saved.contextTokens.toString()) }
+    var toolBudget by rememberSaveable { mutableStateOf(saved.toolBudgetTokens.toString()) }
     var temperature by rememberSaveable { mutableStateOf(saved.temperature.toString()) }
     var topK by rememberSaveable { mutableStateOf(saved.topK.toString()) }
     var topP by rememberSaveable { mutableStateOf(saved.topP.toString()) }
@@ -45,7 +46,7 @@ fun EngineMonitorScreen() {
     val otherEngine = owner != null && owner != "terminal"
     val unsaved = model.trim() != saved.modelPath || backend != saved.backend || numCtx.toIntOrNull() != saved.contextTokens ||
         temperature.toDoubleOrNull() != saved.temperature || topK.toIntOrNull() != saved.topK ||
-        topP.toDoubleOrNull() != saved.topP || minRam.toIntOrNull() != saved.minAvailableRamMb
+        topP.toDoubleOrNull() != saved.topP || minRam.toIntOrNull() != saved.minAvailableRamMb || toolBudget.toIntOrNull() != saved.toolBudgetTokens
     val phase = when(runtime.phase) {
         EnginePhase.IDLE -> UiPhase.IDLE
         EnginePhase.LOADING -> UiPhase.LOADING_MODEL
@@ -75,6 +76,7 @@ fun EngineMonitorScreen() {
     Column(Modifier.fillMaxSize().background(BG).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Monitor del engine", style = MaterialTheme.typography.headlineSmall)
         Text("Terminal en lenguaje natural · LiteRT-LM local", color = AccentCyan)
+        Text("Catálogo: ${runtime.catalogToolCount} tools · ~${runtime.catalogTokensEstimate}/${runtime.catalogBudgetTokens} tokens estimados", style = MaterialTheme.typography.bodySmall, color = TextSecond)
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Surface1)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(when(runtime.phase) { EnginePhase.IDLE -> "DESCARGADO"; EnginePhase.LOADING -> "CARGANDO"; EnginePhase.READY -> "LISTO"; EnginePhase.INFERENCING -> "GENERANDO"; EnginePhase.RELEASING -> "LIBERANDO"; EnginePhase.ERROR -> "ERROR" }, color = if(runtime.error != null) AccentRed else AccentCyan)
@@ -117,7 +119,8 @@ fun EngineMonitorScreen() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("NPU", "GPU", "CPU").forEach { choice -> FilterChip(selected = backend == choice, onClick = { backend = choice }, label = { Text(choice) }, enabled = editable) }
                 }
-                OutlinedTextField(numCtx, { numCtx = it }, Modifier.fillMaxWidth(), label = { Text("Contexto (512 a 1984 tokens)") }, enabled = editable, singleLine = true)
+                OutlinedTextField(numCtx, { numCtx = it }, Modifier.fillMaxWidth(), label = { Text("Contexto (512 a 4096 tokens)") }, enabled = editable, singleLine = true)
+                OutlinedTextField(toolBudget, { toolBudget = it }, Modifier.fillMaxWidth(), label = { Text("Tools (256 a 2048 tokens estimados)") }, enabled = editable, singleLine = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(temperature, { temperature = it }, Modifier.weight(1f), label = { Text("Temperatura") }, enabled = editable, singleLine = true)
                     OutlinedTextField(topK, { topK = it }, Modifier.weight(1f), label = { Text("Top K") }, enabled = editable, singleLine = true)
@@ -130,7 +133,7 @@ fun EngineMonitorScreen() {
                     scope.launch {
                         saving = true
                         try {
-                            val settings = EngineSettings(model.trim(), backend, numCtx.toIntOrNull() ?: error("Contexto inválido"), temperature.toDoubleOrNull() ?: error("Temperatura inválida"), topK.toIntOrNull() ?: error("Top K inválido"), topP.toDoubleOrNull() ?: error("Top P inválido"), minRam.toIntOrNull() ?: error("RAM mínima inválida"))
+                            val settings = EngineSettings(model.trim(), backend, numCtx.toIntOrNull() ?: error("Contexto inválido"), temperature.toDoubleOrNull() ?: error("Temperatura inválida"), topK.toIntOrNull() ?: error("Top K inválido"), topP.toDoubleOrNull() ?: error("Top P inválido"), minRam.toIntOrNull() ?: error("RAM mínima inválida")).copy(toolBudgetTokens = toolBudget.toIntOrNull() ?: error("Presupuesto de tools inválido"))
                             withContext(Dispatchers.IO) { EngineSettingsStore(context).save(settings) }
                             saved = settings; message = "Configuración guardada. Se aplicará en la próxima carga."
                         } catch(e: Exception) { message = e.message ?: "No se pudo guardar" } finally { saving = false }

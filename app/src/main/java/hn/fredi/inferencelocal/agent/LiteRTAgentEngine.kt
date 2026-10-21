@@ -43,23 +43,25 @@ class LiteRTAgentEngine(private val context: Context, private val settings: Engi
     override suspend fun generate(prompt: String, tools: List<RemoteTool>): String = lock.withLock {
         withContext(Dispatchers.IO) {
             require(tools.none { it.name == "finish_transaction" })
-            val descriptions = tools.map { buildJsonObject { put("name", it.name); put("description", it.description); put("parameters", it.parameters) } } + buildJsonObject {
-                put("name", "finish_transaction"); put("description", "Finaliza la transacción con una respuesta al usuario")
-                put("parameters", Json.parseToJsonElement("""{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}"""))
-            }
+            val descriptions = tools.map(ToolCatalogBudget::definition) + ToolCatalogBudget.finishDefinition
             val providers = descriptions.map { description -> tool(object : OpenApiTool {
                 override fun getToolDescriptionJsonString(): String = description.toString()
                 override fun execute(paramsJsonString: String): String = error("La ejecución automática está deshabilitada")
             }) }
             ExperimentalFlags.enableConversationConstrainedDecoding = true
-            val conversation = initialize().createConversation(ConversationConfig(tools = providers, automaticToolCalling = false,
+            val conversation = initialize().createConversation(ConversationConfig(tools = providers, automaticToolCalling = false, extraContext = mapOf("enable_thinking" to false),
+                systemInstruction = Contents.of("Emite exactamente una llamada por turno. No combines una herramienta con finish_transaction en el mismo turno."),
                 samplerConfig = SamplerConfig(temperature = settings.temperature, topK = settings.topK, topP = settings.topP)))
-            EngineMonitor.update { it.copy(phase = EnginePhase.INFERENCING, message = "Inferencia local en curso", error = null) }
+            EngineMonitor.update { it.copy(phase = EnginePhase.INFERENCING, message = "Inferencia local en curso", error = null,
+                catalogToolCount = tools.count { tool -> tool.transport.type == "ssh" },
+                catalogTokensEstimate = ToolCatalogBudget.estimatedTokens(tools), catalogBudgetTokens = settings.toolBudgetTokens) }
             try {
                 val calls = mutableListOf<ToolCall>()
+                val text = StringBuilder()
                 var outputBytes = 0
                 conversation.sendMessageAsync(prompt).collect { chunk ->
                     outputBytes += chunk.contents.contents.filterIsInstance<Content.Text>().sumOf { it.text.toByteArray().size }
+                    text.append(chunk.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text })
                     require(outputBytes <= 4096) { "Respuesta del modelo demasiado larga" }
                     calls.addAll(chunk.toolCalls)
                 }
@@ -72,13 +74,9 @@ class LiteRTAgentEngine(private val context: Context, private val settings: Engi
                         evaluations = it.evaluations + 1
                     ) }
                 }
-                require(calls.size == 1) { "El modelo debe emitir exactamente una llamada a herramienta" }
-                val call = calls.single()
-                val args = buildJsonObject { call.arguments.forEach { (name, value) -> require(value is String); put(name, value) } }
-                buildJsonObject {
-                    if (call.name == "finish_transaction") put("final_answer", args.getValue("answer"))
-                    else put("tool_call", buildJsonObject { put("name", call.name); put("arguments", args) })
-                }.toString()
+                ModelOutputCodec.encode(calls.map { call -> call.name to buildJsonObject {
+                    call.arguments.forEach { (name, value) -> require(value is String); put(name, value) }
+                } }, text.toString())
             } finally {
                 conversation.close()
                 EngineMonitor.update { it.copy(phase = EnginePhase.READY, message = "Engine listo · ${settings.backend}") }
