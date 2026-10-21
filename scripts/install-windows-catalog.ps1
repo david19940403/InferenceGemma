@@ -52,5 +52,15 @@ foreach($payload in $payloads) {
     $published+=,[ordered]@{id=$saved.id;name=$saved.name;effect=($entries | Where-Object {($NamePrefix+$_.name) -eq $saved.name}).effect}
 }
 $manifest=[ordered]@{installed_at=(Get-Date).ToString('o');target_host=$TargetHost;directory=$destinationPath;backup=$backup;tools=$published}
+if(-not $NoRegister) {
+    Add-Type -AssemblyName System.Security
+    $access=[Text.Encoding]::UTF8.GetBytes((@{url=$CatalogUrl.TrimEnd('/');token=$config.token} | ConvertTo-Json -Compress))
+    try {$encrypted=[Security.Cryptography.ProtectedData]::Protect($access,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)} finally {[Array]::Clear($access,0,$access.Length)}
+    $accessPath=Join-Path $destinationPath 'catalog-access.enc'
+    [IO.File]::WriteAllBytes($accessPath,$encrypted)
+    $taskSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls.exe $accessPath /inheritance:r /grant:r "*$($taskSid):F" '*S-1-5-18:F' | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'No se pudieron aplicar permisos al acceso cifrado de ayuda'}
+}
 [IO.File]::WriteAllText((Join-Path $destinationPath 'installed-catalog.json'),($manifest | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
 [ordered]@{status='success';scripts=@(Get-ChildItem -LiteralPath $source -Filter '*.ps1').Count;registered=$published.Count;destination=$destinationPath;backup=$backup} | ConvertTo-Json -Compress

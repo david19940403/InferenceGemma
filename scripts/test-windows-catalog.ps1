@@ -57,4 +57,17 @@ if(@($find.items).Count -ne 1){throw 'Busqueda por nombre fallo'}
 [void](Invoke-Check files.ps1 @('read','C:\Users\David\.ssh\id_ed25519','_','200') 1)
 [void](Invoke-Check files.ps1 @('list','relative-path') 1)
 if($TestDesktop){[void](Invoke-Check desktop-open.ps1 @('calculator'))}
+if(Test-Path -LiteralPath (Join-Path $Directory 'catalog-access.enc')) {
+    $summary=Invoke-Check help.ps1 @('summary')
+    if($summary.total -lt 1 -or $summary.groups.ayuda -lt 1){throw 'Ayuda no detecta el catalogo activo'}
+    $first=Invoke-Check help.ps1 @('list','','1','2')
+    $second=Invoke-Check help.ps1 @('list','','2','2')
+    if($first.next -ne 2 -or @($first.names).Count -ne 2 -or $first.names[0] -in $second.names){throw 'Paginacion invalida'}
+    $network=Invoke-Check help.ps1 @('search','red','1','10')
+    if('network_ping' -notin $network.names){throw 'Busqueda de ayuda por categoria fallo'}
+    $detail=Invoke-Check help.ps1 @('detail','files_read_text')
+    if('path' -notin $detail.required -or -not $detail.example){throw 'Ayuda de parametros incompleta'}
+    [void](Invoke-Check help.ps1 @('detail','tool_inexistente') 1)
+    [void](Invoke-Check help.ps1 @('list','','0') 1)
+}
 [ordered]@{status='success';passed=$passed;test_directory=$testRoot;runtime='Windows PowerShell 5.1'} | ConvertTo-Json -Compress

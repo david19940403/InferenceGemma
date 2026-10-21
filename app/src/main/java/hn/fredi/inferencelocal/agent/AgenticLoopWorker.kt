@@ -23,6 +23,16 @@ class AgenticLoopWorker(
         require(query.isNotBlank() && query.toByteArray().size <= 512) { "La instrucción debe ocupar entre 1 y 512 bytes" }
         progress("Buscando herramientas…")
         val tools = search(query)
+        val helpArgs = CatalogHelp.arguments(query)
+        val help = tools.singleOrNull { it.name == "tools_help" || it.name.endsWith("_tools_help") }
+        if (help != null && helpArgs != null) {
+            val target = hosts.singleOrNull { it.host == help.transport.target_host } ?: error("Host no autorizado")
+            progress("Consultando ayuda del catalogo.")
+            val output = executor.execute(target.host, CommandBuilder.build(help, helpArgs, target.shell))
+            val response = Json.parseToJsonElement(if (output.exitCode == 0) output.stdout else output.stderr).jsonObject
+            check(output.exitCode == 0) { response["message"]?.jsonPrimitive?.content ?: "No se pudo consultar la ayuda" }
+            return CatalogHelp.answer(response)
+        }
         if (tools.isEmpty()) return "No encontré herramientas para esta instrucción. Registra una en Tool Store."
         val catalog = JsonArray(tools.map { buildJsonObject {
             put("name", it.name); put("description", it.description); put("host", it.transport.target_host); put("parameters", it.parameters)

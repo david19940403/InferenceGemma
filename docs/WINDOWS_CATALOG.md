@@ -6,9 +6,11 @@ y argumentos con el modelo, y el S24 envia las instrucciones por VPN.
 
 El catalogo inicial agrega 19 herramientas y conserva `sysinfo_windows` y
 `get-sysinfo.ps1`. No hace falta reinstalar Android al ampliar este catalogo.
+La tool `tools_help` se suma a ese conjunto: 21 herramientas en total en esta PC.
 
 | Grupo | Tools | Ejemplos de instrucciones |
 |---|---|---|
+| Ayuda | `tools_help` | Que herramientas tienes; lista tools; ayuda de red; explica files_read_text |
 | Almacenamiento | `windows_disk_space` | Cuanto espacio libre queda en el disco C |
 | Red | `windows_network_adapters`, `network_ping`, `network_tcp_port`, `network_dns_lookup` | Muestra las IP de la VPN; haz ping a 192.168.9.2; comprueba el puerto 8000 de 192.168.9.6 |
 | Procesos | `windows_process_list`, `windows_process_stop` | Muestra los procesos que consumen mas memoria; cierra el proceso con PID 12345 |
@@ -42,6 +44,29 @@ solo modifican archivos propios y cierran un proceso creado para la prueba.
   extensos habra que ampliar el manejo de resultados del agente.
 
 ## Instalar o actualizar
+
+### Ayuda del catalogo
+
+`tools_help` consulta el catalogo activo del Tool Store; incluye tambien tools
+agregadas desde el administrador web. Modos: `summary` (categorias y total),
+`list` (nombres), `search` (tema) y `detail` (nombre exacto, parametros requeridos,
+opciones y ejemplo). `page` comienza en 1 y `limit` admite de 1 a 10; `next`
+indica la pagina siguiente. Se pagina para conservar resultados breves.
+Las consultas como `que herramientas tienes`, `lista tools pagina 2`,
+`ayuda de red` y `ayuda de files_read_text` se resuelven directamente con esta
+tool. El agente muestra el inventario devuelto, sin reinterpretar sus cantidades
+o nombres con otra inferencia del modelo.
+
+```powershell
+C:\Users\David\.toolsexecutiosn\help.ps1 summary
+C:\Users\David\.toolsexecutiosn\help.ps1 list '' 1 5
+C:\Users\David\.toolsexecutiosn\help.ps1 search archivos
+C:\Users\David\.toolsexecutiosn\help.ps1 detail files_read_text
+```
+
+El instalador protege el token con DPAPI de Windows en `catalog-access.enc`,
+legible por la cuenta que instala y ejecuta las tools. Al cambiar el token o la
+URL del catalogo, ejecuta otra vez el instalador. No se imprimen credenciales.
 
 ```powershell
 .\scripts\install-windows-catalog.ps1

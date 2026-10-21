@@ -1,5 +1,22 @@
 [
   {
+    "name": "tools_help",
+    "description": "Ayuda help listar lista tools herramientas disponibles capacidades que puedes hacer. Ejecuta esta tool para consultar el catalogo completo antes de responder: las herramientas recuperadas por busqueda son solo un subconjunto, no todas las disponibles.",
+    "script": "help.ps1",
+    "arguments": ["{action}", "{query}", "{page}", "{limit}"],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "description": "summary resumen; list nombres; search tema; detail nombre exacto", "enum": ["summary", "list", "search", "detail"], "default": "summary"},
+        "query": {"type": "string", "description": "Tema (archivos, red, procesos) o nombre exacto para detail", "default": ""},
+        "page": {"type": "string", "description": "Pagina del listado, comienza en 1", "default": "1"},
+        "limit": {"type": "string", "description": "Resultados por pagina de 1 a 10", "default": "5"}
+      },
+      "required": []
+    },
+    "effect": "read"
+  },
+  {
     "name": "windows_disk_space",
     "description": "Espacio libre de discos Windows almacenamiento unidades capacidad disco lleno",
     "script": "disks.ps1",
