@@ -12,6 +12,7 @@
 /.kotlin/
 /toolstore/store.db*
 /toolstore/toolstore.exe
+/toolstore/toolstore.env
 /toolstore/toolstore
 /agent-config.local.json
 **/build/

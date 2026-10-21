@@ -108,4 +108,6 @@ go vet ./...
 go build -o toolstore.exe .
 ```
 
+En Windows, copia `toolstore/toolstore.env.example` como `toolstore/toolstore.env`, configura el token y ejecuta `toolstore/install-service.ps1 -Action Install` desde una consola elevada para registrar el catálogo como servicio automático. La base SQLite y los secretos permanecen fuera de Git.
+
 Las pruebas cubren catálogo, autenticación, búsqueda/K, JSON adicional, placeholders, escape POSIX/PowerShell, feedback de ejecución, errores remotos y prevención de duplicados. La validación NPU/SSH en hardware necesita tu modelo, tablet y claves reales. El código alternativo de terminal vía HTTP local se conserva en `orchestrator/` como compatibilidad, sin exponerlo en la navegación principal.

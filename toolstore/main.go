@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -62,9 +63,24 @@ type server struct {
 var assets embed.FS
 
 func main() {
+	loadEnvFile()
+	if isWindowsService(os.Args[1:]) {
+		if err := runWindowsService(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := runServer(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runServer(ctx context.Context) error {
 	s, err := openStore(env("TOOLSTORE_DB", "./store.db"))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer s.db.Close()
 	s.token = os.Getenv("TOOLSTORE_TOKEN")
@@ -72,8 +88,6 @@ func main() {
 	addr := env("TOOLSTORE_ADDR", "127.0.0.1:8000")
 	log.Printf("Tool Store escuchando en %s", addr)
 	srv := &http.Server{Addr: addr, Handler: requestLog(s.routes()), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -81,7 +95,38 @@ func main() {
 		srv.Shutdown(c)
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		return err
+	}
+	return nil
+}
+
+func loadEnvFile() {
+	path := os.Getenv("TOOLSTORE_ENV_FILE")
+	if path == "" {
+		if executable, err := os.Executable(); err == nil {
+			path = filepath.Join(filepath.Dir(executable), "toolstore.env")
+		} else {
+			path = "toolstore.env"
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) == "" || os.Getenv(strings.TrimSpace(key)) != "" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
+			value = value[1 : len(value)-1]
+		}
+		_ = os.Setenv(strings.TrimSpace(key), value)
 	}
 }
 

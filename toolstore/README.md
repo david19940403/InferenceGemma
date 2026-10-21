@@ -2,6 +2,23 @@
 
 Servicio Go/SQLite con administrador web y búsqueda TF-IDF. El catálogo describe acciones; **no ejecuta SSH ni aloja el modelo LiteRT**. El Android ejecuta las acciones recuperadas contra sus hosts autorizados.
 
+## Configuración y servicio de Windows
+
+Copia `toolstore.env.example` como `toolstore.env` y define ahí la dirección, el token, el código del administrador y la base SQLite. El archivo `toolstore.env` es local y está excluido de Git; el proceso lo busca junto al ejecutable.
+
+```powershell
+Copy-Item toolstore.env.example toolstore.env
+.\toolstore.exe
+```
+
+Para instalarlo como servicio real de Windows, abre PowerShell como administrador y ejecuta:
+
+```powershell
+.\install-service.ps1 -Action Install
+```
+
+El servicio usa `--service`, arranca automáticamente con Windows y conserva la base en `TOOLSTORE_DB`. Para revisar o detenerlo: `.\install-service.ps1 -Action Status`, `Stop` o `Uninstall`.
+
 ## Escucha y autenticación
 
 ```powershell
