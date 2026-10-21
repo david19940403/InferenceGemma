@@ -27,6 +27,7 @@ class ConfigVault(private val context: Context) {
         check(!EngineMonitor.state.value.busy && !EngineMonitor.state.value.modelLoaded && !hn.fredi.inferencelocal.remote.RemoteJobs.pending) { "Libera el engine en la pestaña Motor antes de importar otra configuración" }
         require(text.toByteArray().size <= 128 * 1024) { "Configuración demasiado grande" }
         val config = Json.decodeFromString<AgentConfig>(text).also { it.validate() }
+        SshCredentials.client(config.private_key, config.known_hosts).removeAllIdentity()
         ToolStoreEndpoint.normalize(config.tool_store_url)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
         val encrypted = cipher.doFinal(Json.encodeToString(config).toByteArray())

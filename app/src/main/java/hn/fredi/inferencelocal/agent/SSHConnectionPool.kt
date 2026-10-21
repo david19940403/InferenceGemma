@@ -1,12 +1,10 @@
 package hn.fredi.inferencelocal.agent
 
 import com.jcraft.jsch.ChannelExec
-import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 
 data class CommandOutput(val exitCode: Int, val stdout: String, val stderr: String)
@@ -14,15 +12,7 @@ data class CommandOutput(val exitCode: Int, val stdout: String, val stderr: Stri
 class SSHConnectionPool(private val config: AgentConfig) : AutoCloseable {
     private val lock = Mutex()
     private val sessions = mutableMapOf<HostConfig, Session>()
-    private val jsch = JSch().apply {
-        // Android does not expose the Java 15 EdDSA providers used by JSch on desktop.
-        JSch.setConfig("ssh-ed25519", "com.jcraft.jsch.bc.SignatureEd25519")
-        JSch.setConfig("keypairgen.eddsa", "com.jcraft.jsch.bc.KeyPairGenEdDSA")
-        JSch.setConfig("keypairgen_fromprivate.eddsa", "com.jcraft.jsch.bc.KeyPairGenEdDSA")
-        setKnownHosts(ByteArrayInputStream(config.known_hosts.toByteArray()))
-        val bytes = config.private_key.toByteArray()
-        try { addIdentity("agent", bytes, null, null) } finally { bytes.fill(0) }
-    }
+    private val jsch = SshCredentials.client(config.private_key, config.known_hosts)
     suspend fun execute(host: String, command: String): CommandOutput = withContext(Dispatchers.IO) {
         val target = config.hosts.singleOrNull { it.host == host } ?: error("Host no autorizado")
         val session = lock.withLock {

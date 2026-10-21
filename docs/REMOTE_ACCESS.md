@@ -60,6 +60,25 @@ Se responde `202` al aceptar una operación y `409` si otra está ocupando el en
 
 ## Compilar
 
+### Preparar SSH de esta PC
+
+Para una PC Windows con OpenSSH activo y la cuenta actual perteneciente al
+grupo Administradores, `scripts/configure-local-ssh.ps1` crea una clave dedicada
+en `.cache/tablet-ssh`, conserva las claves autorizadas existentes e instala
+la nueva clave con permisos de OpenSSH. Solicita elevacion de Windows.
+La clave solo admite origen desde el Tab, la PC VPN y loopback; no permite
+forwarding ni PTY. Copia la clave publica del servidor desde ProgramData para
+verificar su identidad, sin aceptar claves desconocidas.
+
+```powershell
+.\scripts\configure-local-ssh.ps1 -PcAddress 192.168.9.6 -TabletAddress 192.168.9.2
+```
+
+Actualiza `agent-config.local.json` con la clave, el usuario real, la IP VPN y
+`known_hosts`. Este JSON y las claves estan excluidos de Git. Importa el JSON
+desde Terminal con el modelo liberado y elimina la copia temporal de Descargas.
+La importacion valida las claves antes de cifrar y guardar la configuracion.
+
 ```powershell
 .\gradlew.bat :app:assembleDebug :client:assembleDebug :app:testDebugUnitTest
 ```
