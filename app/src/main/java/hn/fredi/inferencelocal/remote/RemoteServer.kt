@@ -16,7 +16,6 @@ import kotlinx.serialization.*
 import kotlinx.serialization.json.*
 import java.security.MessageDigest
 import java.net.URI
-import java.util.concurrent.ConcurrentHashMap
 
 private val wire = Json { encodeDefaults = true }
 @Serializable private data class IntentRequest(val query: String, val request_id: String)
@@ -32,7 +31,7 @@ private suspend inline fun <reified T> ApplicationCall.body(): T {
 }
 
 fun Application.remoteModule(context: Context, settings: RemoteSettings) {
-    val sessions = ConcurrentHashMap<String,Long>()
+    val connections = RemoteConnectionRegistry()
     val clientAvailable = runCatching { context.assets.open("client.apk").close(); true }.getOrDefault(false)
     suspend fun ApplicationCall.authorized(): Boolean {
         val origin = request.headers[HttpHeaders.Origin]
@@ -41,7 +40,7 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
         }
         val bearer = request.headers[HttpHeaders.Authorization]
         val valid = if(bearer != null) MessageDigest.isEqual(bearer.toByteArray(), "Bearer ${settings.token}".toByteArray())
-            else request.cookies["remote_session"]?.let { (sessions[it] ?: 0) > System.currentTimeMillis() } == true
+            else connections.authenticate(request.cookies["remote_session"]) != null
         if(!valid) json(mapOf("error" to "Introduce la clave de acceso del dispositivo"),HttpStatusCode.Unauthorized)
         return valid
     }
@@ -79,16 +78,24 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
             call.respondOutputStream(ContentType.parse("application/vnd.android.package-archive")) { context.assets.open("client.apk").use { it.copyTo(this) } }
         }
         post("/remote/session") { call.guarded {
-            sessions.entries.removeIf { it.value < System.currentTimeMillis() }
-            check(sessions.size < 128) { "Demasiadas sesiones activas" }
-            val session = newRemoteToken();sessions[session] = System.currentTimeMillis()+8*60*60*1000
+            val host = call.request.headers["X-Forwarded-For"]?.substringBefore(',')?.trim()
+                ?: call.request.local.remoteHost
+            val (session, _) = connections.create(host, call.request.headers[HttpHeaders.UserAgent].orEmpty())
             call.response.cookies.append(Cookie("remote_session",session,httpOnly=true,path="/",maxAge=28800,extensions=mapOf("SameSite" to "Strict")))
             call.json(mapOf("ok" to true))
         } }
         post("/remote/logout") { call.guarded {
-            call.request.cookies["remote_session"]?.let { sessions.remove(it) }
+            connections.revokeToken(call.request.cookies["remote_session"])
             call.response.cookies.append(Cookie("remote_session","",httpOnly=true,path="/",maxAge=0,extensions=mapOf("SameSite" to "Strict")))
             call.json(mapOf("ok" to true))
+        } }
+        get("/remote/connections") { call.guarded { call.json(connections.list()) } }
+        delete("/remote/connections/{id}") { call.guarded {
+            val id = call.parameters["id"] ?: throw IllegalArgumentException("Conexi�n inv�lida")
+            call.json(mapOf("ok" to connections.revoke(id)))
+        } }
+        post("/remote/connections/purge") { call.guarded {
+            call.json(mapOf("ok" to true, "purged" to connections.purgeAll()))
         } }
         get("/remote/status") { call.guarded {
             val memory = android.app.ActivityManager.MemoryInfo().also { context.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it) }

@@ -8,6 +8,8 @@ import android.os.Bundle
 import android.view.View
 import android.webkit.*
 import android.widget.*
+import android.os.Handler
+import android.os.Looper
 import java.net.URI
 
 /** Thin Android client: all inference and credentials for SSH stay on the host device. */
@@ -15,6 +17,9 @@ class MainActivity : Activity() {
     private var browser: WebView? = null
     private var address = ""
     private var connected = false
+    private var reconnectAttempt = 0
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private val preferences by lazy { getPreferences(MODE_PRIVATE) }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun root(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(12,16,23))
@@ -22,11 +27,17 @@ class MainActivity : Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        address = savedInstanceState?.getString("address") ?: getPreferences(MODE_PRIVATE).getString("address", "").orEmpty()
-        if(savedInstanceState?.getBoolean("connected") == true) showBrowser() else showConnection()
+        address = savedInstanceState?.getString("address") ?: preferences.getString("last_server", "").orEmpty().ifBlank { getPreferences(MODE_PRIVATE).getString("address", "").orEmpty() }
+        if(savedInstanceState?.getBoolean("connected") == true || address.isNotBlank()) showBrowser() else showConnection()
     }
+    private fun rememberedServers(): List<String> = preferences.getString("servers", "").orEmpty().split('|').map { it.trim() }.filter { it.isNotBlank() }
+    private fun rememberServer(value: String) {
+        val ordered = listOf(value) + rememberedServers().filterNot { it.equals(value, true) }
+        preferences.edit().putString("last_server", value).putString("servers", ordered.take(8).joinToString("|")).apply()
+    }
+    private fun clearReconnect() { reconnectHandler.removeCallbacksAndMessages(null); reconnectAttempt = 0 }
     private fun showConnection() {
-        connected = false; browser?.destroy(); browser = null
+        connected = false; clearReconnect(); browser?.destroy(); browser = null
         val outer = root(); val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(36), dp(24), dp(24)) }
         fun text(value: String, size: Float, color: Int = Color.WHITE) = TextView(this).apply { text = value; textSize = size; setTextColor(color); setPadding(0,0,0,dp(20)) }
         content.addView(text("Inference Client", 28f))
@@ -39,15 +50,22 @@ class MainActivity : Activity() {
                 val value = input.text.toString().trim().trimEnd('/')
                 val uri = URI(value)
                 require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null && uri.path.isNullOrEmpty()) { "Introduce solo la dirección HTTP(S) del servidor y su puerto" }
-                address = value; getPreferences(MODE_PRIVATE).edit().putString("address",address).apply(); showBrowser()
+                address = value; rememberServer(address); showBrowser()
             } catch(e: Exception) { error.text = e.message ?: "Dirección inválida" }
         } }, LinearLayout.LayoutParams(-1,dp(56)))
+        val saved = rememberedServers()
+        if(saved.isNotEmpty()) {
+            content.addView(text("Servidores recordados", 16f))
+            saved.forEach { savedAddress -> content.addView(Button(this).apply { text = savedAddress; setOnClickListener { address=savedAddress; rememberServer(address); showBrowser() } }, LinearLayout.LayoutParams(-1,dp(52))) }
+        }
         content.addView(text("La clave de acceso aparece en Acceso remoto, dentro de la app del servidor. Este cliente no descarga ni ejecuta modelos.",14f,Color.LTGRAY).apply { setPadding(0,dp(24),0,0) })
         outer.addView(content); setContentView(outer)
     }
     @Suppress("SetJavaScriptEnabled")
     private fun showBrowser() {
         connected = true
+        clearReconnect()
+        rememberServer(address)
         val outer = root()
         outer.addView(Button(this).apply { text = "Cambiar servidor"; setOnClickListener { showConnection() } }, LinearLayout.LayoutParams(-1,dp(48)))
         val origin = URI(address)
@@ -65,14 +83,22 @@ class MainActivity : Activity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(view,false)
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean = !allowed(request.url.toString())
+            override fun onPageFinished(v: WebView, url: String) { reconnectAttempt = 0 }
             override fun onReceivedError(v: WebView, request: WebResourceRequest, error: WebResourceError) {
+                if(request.isForMainFrame) scheduleReconnect()
                 if(request.isForMainFrame) Toast.makeText(this@MainActivity,"No se pudo conectar. Revisa la dirección y que el servidor esté activo.",Toast.LENGTH_LONG).show()
             }
         }
         view.setDownloadListener { url, _, _, _, _ -> if(allowed(url)) startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url))) }
         browser = view; outer.addView(view,LinearLayout.LayoutParams(-1,0,1f)); setContentView(outer); view.loadUrl(address + "/")
     }
+    private fun scheduleReconnect() {
+        if(!connected || address.isBlank()) return
+        reconnectHandler.removeCallbacksAndMessages(null)
+        val delay = minOf(60_000L, 1_000L shl minOf(reconnectAttempt++, 6))
+        reconnectHandler.postDelayed({ if(connected) browser?.loadUrl(address + "/") }, delay)
+    }
     override fun onSaveInstanceState(outState: Bundle) { outState.putString("address",address);outState.putBoolean("connected",connected);super.onSaveInstanceState(outState) }
     @Deprecated("Deprecated in Java") override fun onBackPressed() { if(connected) showConnection() else super.onBackPressed() }
-    override fun onDestroy() { browser?.destroy(); super.onDestroy() }
+    override fun onDestroy() { clearReconnect(); browser?.destroy(); super.onDestroy() }
 }

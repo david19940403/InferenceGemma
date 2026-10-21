@@ -32,6 +32,9 @@ Las rutas `/remote/status`, `/remote/settings`, `/remote/intents`, `/remote/engi
 |---|---|
 | `GET /` | Interfaz web |
 | `GET /remote/health` | Disponibilidad sin datos privados |
+| `GET /remote/connections` | Monitor de sesiones activas; nunca devuelve tokens |
+| `DELETE /remote/connections/{id}` | Revocar una sesion especifica |
+| `POST /remote/connections/purge` | Revocar todas las sesiones activas |
 | `GET /client.apk` | APK cliente incluido en la compilación debug del servidor |
 | `POST /remote/session` | Iniciar sesión usando la clave en Authorization |
 | `POST /remote/logout` | Cerrar la sesión del navegador |
