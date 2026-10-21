@@ -26,6 +26,17 @@ El cliente usa una cookie HttpOnly, SameSite Strict, con duración de ocho horas
 
 ## API
 
+### Sesion recordada y monitor en Android
+
+El cliente guarda la sesion de WebView en disco y la recupera al reabrir la app.
+Mientras la sesion siga vigente (ocho horas), no vuelve a solicitar la clave.
+Revocar, purgar o reiniciar el acceso remoto invalida las sesiones y requiere
+autenticarse de nuevo. El cliente no guarda la clave maestra para eludir una revocacion.
+
+La pestaña Red del Android servidor muestra el monitor de conexiones: IP,
+actividad reciente, ultima actividad y cliente. Permite revocar una sesion o
+purgar todas, con confirmacion. Se actualiza cada segundo.
+
 Las rutas `/remote/status`, `/remote/settings`, `/remote/intents`, `/remote/engine` y `/remote/cancel` exigen `Authorization: Bearer <clave>` o una sesión iniciada con `POST /remote/session`. Los navegadores deben utilizar el mismo origen; no se habilita CORS.
 
 | Ruta | Uso |

@@ -20,6 +20,13 @@ class MainActivity : Activity() {
     private var reconnectAttempt = 0
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val preferences by lazy { getPreferences(MODE_PRIVATE) }
+    private val cookieHandler = Handler(Looper.getMainLooper())
+    private val persistCookies = object : Runnable {
+        override fun run() {
+            CookieManager.getInstance().flush()
+            cookieHandler.postDelayed(this, 1000)
+        }
+    }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun root(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(12,16,23))
@@ -27,6 +34,7 @@ class MainActivity : Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        cookieHandler.post(persistCookies)
         address = savedInstanceState?.getString("address") ?: preferences.getString("last_server", "").orEmpty().ifBlank { getPreferences(MODE_PRIVATE).getString("address", "").orEmpty() }
         if(savedInstanceState?.getBoolean("connected") == true || address.isNotBlank()) showBrowser() else showConnection()
     }
@@ -100,5 +108,6 @@ class MainActivity : Activity() {
     }
     override fun onSaveInstanceState(outState: Bundle) { outState.putString("address",address);outState.putBoolean("connected",connected);super.onSaveInstanceState(outState) }
     @Deprecated("Deprecated in Java") override fun onBackPressed() { if(connected) showConnection() else super.onBackPressed() }
-    override fun onDestroy() { clearReconnect(); browser?.destroy(); super.onDestroy() }
+    override fun onStop() { CookieManager.getInstance().flush(); super.onStop() }
+    override fun onDestroy() { cookieHandler.removeCallbacksAndMessages(null); CookieManager.getInstance().flush(); clearReconnect(); browser?.destroy(); super.onDestroy() }
 }

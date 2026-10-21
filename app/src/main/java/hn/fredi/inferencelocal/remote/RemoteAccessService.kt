@@ -18,6 +18,7 @@ class RemoteAccessService : Service() {
     companion object {
         const val START = "remote.START"
         const val STOP = "remote.STOP"
+        val connections = RemoteConnectionRegistry()
         private val mutableState = MutableStateFlow(RemoteAccessState())
         val state = mutableState.asStateFlow()
     }
@@ -36,6 +37,7 @@ class RemoteAccessService : Service() {
         if(intent?.action == STOP) { stopSelf(); return START_NOT_STICKY }
         if(state.value.running || state.value.starting) return START_NOT_STICKY
         mutableState.value = RemoteAccessState(starting = true)
+        connections.purgeAll()
         scope.launch {
             try {
                 val settings = RemoteSettingsStore(this@RemoteAccessService).load()
@@ -56,6 +58,7 @@ class RemoteAccessService : Service() {
         return START_NOT_STICKY
     }
     override fun onDestroy() {
+        connections.purgeAll()
         scope.cancel()
         val stopping = synchronized(lifecycleLock) { destroyed = true; server.also { server = null } }
         mutableState.value = RemoteAccessState(starting = true, error = state.value.error)

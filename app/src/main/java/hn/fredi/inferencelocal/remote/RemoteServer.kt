@@ -31,7 +31,7 @@ private suspend inline fun <reified T> ApplicationCall.body(): T {
 }
 
 fun Application.remoteModule(context: Context, settings: RemoteSettings) {
-    val connections = RemoteConnectionRegistry()
+    val connections = RemoteAccessService.connections
     val clientAvailable = runCatching { context.assets.open("client.apk").close(); true }.getOrDefault(false)
     suspend fun ApplicationCall.authorized(): Boolean {
         val origin = request.headers[HttpHeaders.Origin]
@@ -78,8 +78,7 @@ fun Application.remoteModule(context: Context, settings: RemoteSettings) {
             call.respondOutputStream(ContentType.parse("application/vnd.android.package-archive")) { context.assets.open("client.apk").use { it.copyTo(this) } }
         }
         post("/remote/session") { call.guarded {
-            val host = call.request.headers["X-Forwarded-For"]?.substringBefore(',')?.trim()
-                ?: call.request.local.remoteHost
+            val host = call.request.local.remoteHost
             val (session, _) = connections.create(host, call.request.headers[HttpHeaders.UserAgent].orEmpty())
             call.response.cookies.append(Cookie("remote_session",session,httpOnly=true,path="/",maxAge=28800,extensions=mapOf("SameSite" to "Strict")))
             call.json(mapOf("ok" to true))

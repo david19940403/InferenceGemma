@@ -15,6 +15,9 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import hn.fredi.inferencelocal.remote.*
+import kotlinx.coroutines.delay
+import java.text.DateFormat
+import java.util.Date
 
 @Composable fun RemoteAccessScreen() {
     val context = LocalContext.current
@@ -26,8 +29,43 @@ import hn.fredi.inferencelocal.remote.*
     var reveal by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val active = state.running || state.starting
+    var connections by remember { mutableStateOf(emptyList<RemoteConnection>()) }
+    var pendingRevocation by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        while(true) {
+            connections = RemoteAccessService.connections.list()
+            delay(1000)
+        }
+    }
+    pendingRevocation?.let { id ->
+        AlertDialog(onDismissRequest={pendingRevocation=null},
+            title={Text(if(id == "all") "Purgar conexiones" else "Revocar conexion")},
+            text={Text("El cliente tendra que introducir la clave para volver a conectarse.")},
+            confirmButton={TextButton(onClick={
+                if(id == "all") RemoteAccessService.connections.purgeAll() else RemoteAccessService.connections.revoke(id)
+                connections=RemoteAccessService.connections.list()
+                pendingRevocation=null
+            }) {Text("Confirmar")}},
+            dismissButton={TextButton(onClick={pendingRevocation=null}) {Text("Cancelar")}})
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Acceso remoto", style = MaterialTheme.typography.headlineMedium)
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                Text("Monitor de conexiones", style=MaterialTheme.typography.titleLarge)
+                Text("${connections.size} sesiones autorizadas")
+                if(connections.isEmpty()) Text("Sin clientes conectados")
+                connections.forEach { connection ->
+                    HorizontalDivider()
+                    Text(connection.remoteHost, style=MaterialTheme.typography.titleMedium)
+                    Text(if(System.currentTimeMillis()-connection.lastSeen < 15000) "En linea" else "Inactiva")
+                    Text("Ultima actividad: ${DateFormat.getDateTimeInstance().format(Date(connection.lastSeen))}")
+                    Text(connection.userAgent, maxLines=2, style=MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick={pendingRevocation=connection.id}) {Text("Revocar conexion")}
+                }
+                OutlinedButton(enabled=connections.isNotEmpty(),onClick={pendingRevocation="all"}) {Text("Purgar todas las conexiones")}
+            }
+        }
         Text("Este dispositivo ejecuta el modelo. Conecta una PC u otro Android desde la misma red o una VPN.")
         Text(if(state.running) "● Servidor web activo" else if(state.starting) "Iniciando servidor…" else "Servidor detenido",color=MaterialTheme.colorScheme.primary)
         state.urls.forEach { url ->
